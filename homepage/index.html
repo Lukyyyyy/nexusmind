@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>知枢 NexusMind</title>
+    <style>
+      :root { font-family: Inter, "PingFang SC", "Microsoft YaHei", Arial, sans-serif; color: #14213d; background: #f6f8fb; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; background: linear-gradient(135deg, #f6f8fb 0%, #edf4f2 52%, #f7f2e8 100%); }
+      .page { width: min(1120px, calc(100% - 40px)); margin: 0 auto; padding: 56px 0; }
+      .nav { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 72px; }
+      .brand { display: flex; align-items: center; gap: 12px; font-weight: 800; font-size: 20px; }
+      .mark { width: 36px; height: 36px; border-radius: 10px; display: grid; place-items: center; background: #163b3f; color: #fff; font-weight: 900; }
+      .links { display: flex; gap: 18px; color: #52616b; font-size: 14px; }
+      .hero { display: grid; grid-template-columns: minmax(0, 1.04fr) minmax(320px, .96fr); gap: 56px; align-items: center; }
+      h1 { margin: 0; font-size: clamp(44px, 7vw, 88px); line-height: .96; letter-spacing: 0; color: #102326; }
+      .lead { margin: 28px 0 0; max-width: 640px; color: #52616b; font-size: 18px; line-height: 1.8; }
+      .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 34px; }
+      .button { border: 0; border-radius: 8px; padding: 13px 18px; font-weight: 700; font-size: 15px; text-decoration: none; }
+      .primary { background: #163b3f; color: #fff; }
+      .secondary { background: rgba(255,255,255,.72); color: #163b3f; border: 1px solid rgba(22,59,63,.15); }
+      .panel { border: 1px solid rgba(20,33,61,.1); border-radius: 8px; background: rgba(255,255,255,.78); box-shadow: 0 20px 70px rgba(28,45,56,.12); padding: 18px; }
+      .toolbar { display: flex; gap: 7px; margin-bottom: 18px; }
+      .dot { width: 10px; height: 10px; border-radius: 50%; background: #d7dedb; }
+      .search { border-radius: 8px; background: #f2f6f5; padding: 16px; color: #2d4248; font-size: 14px; margin-bottom: 14px; }
+      .result { padding: 16px; border-radius: 8px; background: #fff; border: 1px solid #e7ecea; margin-top: 10px; }
+      .result strong { display: block; margin-bottom: 8px; color: #163b3f; }
+      .result p { margin: 0; color: #65727a; line-height: 1.7; font-size: 14px; }
+      .features { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 72px; }
+      .feature { border-top: 2px solid #163b3f; padding-top: 16px; color: #52616b; line-height: 1.65; font-size: 14px; }
+      .feature b { display: block; color: #14213d; margin-bottom: 8px; font-size: 16px; }
+      @media (max-width: 820px) { .hero { grid-template-columns: 1fr; } .features { grid-template-columns: 1fr 1fr; } .links { display: none; } }
+      @media (max-width: 520px) { .page { width: min(100% - 28px, 1120px); padding-top: 28px; } .features { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <nav class="nav">
+        <div class="brand"><span class="mark">N</span><span>知枢 NexusMind</span></div>
+        <div class="links"><span>知识库</span><span>检索增强</span><span>多组织权限</span></div>
+      </nav>
+      <section class="hero">
+        <div>
+          <h1>知枢 NexusMind</h1>
+          <p class="lead">面向团队知识资产的 RAG 系统，连接文档解析、向量检索、权限隔离与 AI 问答，让内部知识可以被稳定检索、引用和复用。</p>
+          <div class="actions">
+            <a class="button primary" href="../frontend/">进入应用</a>
+            <a class="button secondary" href="../README.md">查看文档</a>
+          </div>
+        </div>
+        <div class="panel" aria-label="NexusMind preview">
+          <div class="toolbar"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+          <div class="search">查询：本季度知识库中关于数据隔离的设计依据是什么？</div>
+          <div class="result"><strong>检索结果</strong><p>系统从权限模型、组织标签和文档可见性规则中召回相关片段，并生成带来源引用的回答。</p></div>
+          <div class="result"><strong>处理链路</strong><p>上传文档经过解析、分块、向量化和索引写入后，可被混合检索用于上下文增强。</p></div>
+        </div>
+      </section>
+      <section class="features">
+        <div class="feature"><b>文档处理</b>支持上传、分片、解析、索引和状态追踪。</div>
+        <div class="feature"><b>混合检索</b>结合关键词与向量相似度，提升召回质量。</div>
+        <div class="feature"><b>权限隔离</b>通过组织标签区分公开、私有和团队知识。</div>
+        <div class="feature"><b>AI 问答</b>基于知识库上下文生成可追溯回答。</div>
+      </section>
+    </main>
+  </body>
+</html>
