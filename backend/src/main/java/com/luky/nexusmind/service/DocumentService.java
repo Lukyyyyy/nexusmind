@@ -10,18 +10,19 @@ import io.minio.GetPresignedObjectUrlArgs;
 import io.minio.MinioClient;
 import io.minio.RemoveObjectArgs;
 import io.minio.http.Method;
+import org.apache.tika.metadata.Metadata;
+import org.apache.tika.parser.AutoDetectParser;
+import org.apache.tika.parser.ParseContext;
+import org.apache.tika.sax.BodyContentHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.io.BufferedReader;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.util.Arrays;
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
  * 文档管理服务类
@@ -31,6 +32,7 @@ import java.util.stream.Collectors;
 public class DocumentService {
 
     private static final Logger logger = LoggerFactory.getLogger(DocumentService.class);
+    private static final int MAX_PREVIEW_CHARS = 20000;
 
     @Autowired
     private FileUploadRepository fileUploadRepository;
@@ -206,13 +208,35 @@ public class DocumentService {
             return null;
         }
     }
+
+    /**
+     * 打开原始文件流，用于浏览器内联预览。
+     *
+     * @param fileName 文件名
+     * @return MinIO对象流
+     */
+    public InputStream openFileStream(String fileName) {
+        logger.info("打开文件流: fileName={}", fileName);
+
+        try {
+            String objectName = "merged/" + fileName;
+            return minioClient.getObject(
+                    GetObjectArgs.builder()
+                            .bucket("uploads")
+                            .object(objectName)
+                            .build());
+        } catch (Exception e) {
+            logger.error("打开文件流失败: fileName={}", fileName, e);
+            throw new RuntimeException("打开文件流失败: " + e.getMessage(), e);
+        }
+    }
     
     /**
      * 获取文件预览内容
      * 
      * @param fileMd5 文件MD5
      * @param fileName 文件名
-     * @return 文件预览内容，对于文本文件返回前几KB内容，非文本文件返回文件信息
+     * @return 文件预览内容，对于可解析文件返回提取文本，非支持文件返回文件信息
      */
     public String getFilePreviewContent(String fileMd5, String fileName) {
         logger.info("获取文件预览内容: fileMd5={}, fileName={}", fileMd5, fileName);
@@ -223,33 +247,25 @@ public class DocumentService {
             
             // 判断文件类型
             String fileExtension = getFileExtension(fileName).toLowerCase();
-            boolean isTextFile = isTextFile(fileExtension);
+            boolean isPreviewableFile = isPreviewableFile(fileExtension);
             
-            if (isTextFile) {
-                // 对于文本文件，读取前10KB内容
+            if (isPreviewableFile) {
                 try (InputStream inputStream = minioClient.getObject(
                         GetObjectArgs.builder()
                                 .bucket("uploads")
                                 .object(objectName)
                                 .build())) {
-                    
-                    BufferedReader reader = new BufferedReader(new InputStreamReader(inputStream, "UTF-8"));
-                    StringBuilder content = new StringBuilder();
-                    String line;
-                    int bytesRead = 0;
-                    int maxBytes = 10240; // 10KB
-                    
-                    while ((line = reader.readLine()) != null && bytesRead < maxBytes) {
-                        content.append(line).append("\n");
-                        bytesRead += line.getBytes("UTF-8").length + 1;
+
+                    String result = extractPreviewText(inputStream);
+                    if (result.isBlank()) {
+                        return "未提取到可预览文本内容，请下载后查看。";
                     }
-                    
-                    String result = content.toString();
-                    if (bytesRead >= maxBytes) {
-                        result += "\n... (内容已截断，仅显示前10KB)";
+
+                    if (result.length() >= MAX_PREVIEW_CHARS) {
+                        result += "\n... (内容已截断，仅显示前" + MAX_PREVIEW_CHARS + "字符)";
                     }
-                    
-                    logger.info("成功获取文本文件预览内容: fileMd5={}, contentLength={}", fileMd5, result.length());
+
+                    logger.info("成功获取文件预览内容: fileMd5={}, contentLength={}", fileMd5, result.length());
                     return result;
                 }
             } else {
@@ -278,6 +294,35 @@ public class DocumentService {
             return "预览失败: " + e.getMessage();
         }
     }
+
+    private String extractPreviewText(InputStream inputStream) throws Exception {
+        AutoDetectParser parser = new AutoDetectParser();
+        BodyContentHandler handler = new BodyContentHandler(MAX_PREVIEW_CHARS);
+        Metadata metadata = new Metadata();
+        ParseContext context = new ParseContext();
+
+        try {
+            parser.parse(inputStream, handler, metadata, context);
+        } catch (Exception e) {
+            if (!isWriteLimitReached(e)) {
+                throw e;
+            }
+            logger.debug("文件预览内容超过字符上限，已截断");
+        }
+
+        return handler.toString().trim();
+    }
+
+    private boolean isWriteLimitReached(Exception e) {
+        Throwable current = e;
+        while (current != null) {
+            if (current.getClass().getName().contains("WriteLimitReachedException")) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
     
     /**
      * 获取文件扩展名
@@ -291,16 +336,17 @@ public class DocumentService {
     }
     
     /**
-     * 判断是否为文本文件
+     * 判断是否为可提取预览文本的文件
      */
-    private boolean isTextFile(String extension) {
-        String[] textExtensions = {
+    private boolean isPreviewableFile(String extension) {
+        String[] previewableExtensions = {
             "txt", "md", "doc", "docx", "pdf", "html", "htm", "xml", "json", 
             "csv", "log", "java", "js", "ts", "py", "cpp", "c", "h", "css", 
-            "scss", "less", "sql", "yml", "yaml", "properties", "conf", "config"
+            "scss", "less", "sql", "yml", "yaml", "properties", "conf", "config",
+            "rtf", "odt", "ppt", "pptx", "xls", "xlsx"
         };
         
-        return Arrays.stream(textExtensions)
+        return Arrays.stream(previewableExtensions)
                 .anyMatch(ext -> ext.equalsIgnoreCase(extension));
     }
     
@@ -320,4 +366,4 @@ public class DocumentService {
             return String.format("%.1f GB", size / (1024.0 * 1024.0 * 1024.0));
         }
     }
-} 
+}

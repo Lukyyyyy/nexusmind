@@ -8,8 +8,7 @@ import com.luky.nexusmind.service.DocumentService;
 import com.luky.nexusmind.utils.LogUtils;
 import com.luky.nexusmind.utils.JwtUtils;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.core.io.Resource;
-import org.springframework.core.io.UrlResource;
+import org.springframework.core.io.InputStreamResource;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -18,7 +17,7 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.web.bind.annotation.*;
 
-import java.io.IOException;
+import java.io.InputStream;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
@@ -324,6 +323,104 @@ public class DocumentController {
     }
     
     /**
+     * 在线预览PDF原文件。
+     *
+     * @param fileName 文件名
+     * @param token JWT token
+     * @return PDF文件流或错误响应
+     */
+    @GetMapping("/preview/pdf")
+    public ResponseEntity<?> previewPdfByName(
+            @RequestParam String fileName,
+            @RequestParam(required = false) String token,
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization) {
+
+        LogUtils.PerformanceMonitor monitor = LogUtils.startPerformanceMonitor("PREVIEW_PDF_BY_NAME");
+        try {
+            String userId = null;
+            String orgTags = null;
+            String resolvedToken = resolveToken(token, authorization);
+
+            if (resolvedToken != null) {
+                try {
+                    userId = jwtUtils.extractUsernameFromToken(resolvedToken);
+                    orgTags = jwtUtils.extractOrgTagsFromToken(resolvedToken);
+                } catch (Exception e) {
+                    LogUtils.logBusiness("PREVIEW_PDF_BY_NAME", "anonymous", "Token解析失败: fileName=%s", fileName);
+                }
+            }
+
+            LogUtils.logBusiness("PREVIEW_PDF_BY_NAME", userId != null ? userId : "anonymous", "接收到PDF预览请求: fileName=%s", fileName);
+
+            Optional<FileUpload> targetFile;
+            if (userId == null) {
+                targetFile = fileUploadRepository.findByFileNameAndIsPublicTrue(fileName);
+            } else {
+                List<FileUpload> accessibleFiles = documentService.getAccessibleFiles(userId, orgTags);
+                targetFile = accessibleFiles.stream()
+                        .filter(file -> file.getFileName().equals(fileName))
+                        .findFirst();
+            }
+
+            if (targetFile.isEmpty()) {
+                monitor.end("PDF预览失败：文件不存在或无权限访问");
+                Map<String, Object> response = new HashMap<>();
+                response.put("code", HttpStatus.NOT_FOUND.value());
+                response.put("message", "文件不存在或无权限访问");
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).body(response);
+            }
+
+            FileUpload file = targetFile.get();
+            if (!file.getFileName().toLowerCase().endsWith(".pdf")) {
+                monitor.end("PDF预览失败：文件类型不支持");
+                Map<String, Object> response = new HashMap<>();
+                response.put("code", HttpStatus.BAD_REQUEST.value());
+                response.put("message", "仅支持PDF在线预览");
+                return ResponseEntity.badRequest().body(response);
+            }
+
+            InputStream inputStream = documentService.openFileStream(file.getFileName());
+            String encodedFileName = URLEncoder.encode(file.getFileName(), StandardCharsets.UTF_8).replace("+", "%20");
+
+            LogUtils.logFileOperation(userId != null ? userId : "anonymous", "PREVIEW_PDF", file.getFileName(), file.getFileMd5(), "SUCCESS");
+            monitor.end("PDF预览文件流打开成功");
+
+            return ResponseEntity.ok()
+                    .contentType(MediaType.APPLICATION_PDF)
+                    .header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename*=UTF-8''" + encodedFileName)
+                    .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                    .body(new InputStreamResource(inputStream));
+        } catch (Exception e) {
+            String userId = "unknown";
+            try {
+                String resolvedToken = resolveToken(token, authorization);
+                if (resolvedToken != null) {
+                    userId = jwtUtils.extractUsernameFromToken(resolvedToken);
+                }
+            } catch (Exception ignored) {}
+
+            LogUtils.logBusinessError("PREVIEW_PDF_BY_NAME", userId, "PDF预览失败: fileName=%s", e, fileName);
+            monitor.end("PDF预览失败: " + e.getMessage());
+            Map<String, Object> response = new HashMap<>();
+            response.put("code", HttpStatus.INTERNAL_SERVER_ERROR.value());
+            response.put("message", "PDF预览失败: " + e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
+        }
+    }
+
+    private String resolveToken(String token, String authorization) {
+        if (token != null && !token.trim().isEmpty()) {
+            return token;
+        }
+
+        if (authorization != null && authorization.startsWith("Bearer ")) {
+            return authorization.substring(7);
+        }
+
+        return null;
+    }
+
+    /**
      * 预览文件内容
      * 
      * @param fileName 文件名
@@ -487,4 +584,4 @@ public class DocumentController {
             return tagId; // 发生错误时返回原tagId
         }
     }
-} 
+}
