@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { computed, reactive } from 'vue';
-import { loginModuleRecord } from '@/constants/app';
 import { useAuthStore } from '@/store/modules/auth';
-import { useRouterPush } from '@/hooks/common/router';
 import { useFormRules, useNaiveForm } from '@/hooks/common/form';
+import { localStg } from '@/utils/storage';
 import { $t } from '@/locales';
 
 defineOptions({
@@ -11,20 +10,23 @@ defineOptions({
 });
 
 const authStore = useAuthStore();
-const { toggleLoginModule } = useRouterPush();
 const { formRef, validate } = useNaiveForm();
 
 interface FormModel {
   userName: string;
   password: string;
+  remember: boolean;
 }
 
+const rememberedLogin = localStg.get('rememberedLogin');
+
 const model: FormModel = reactive({
-  userName: 'admin',
-  password: 'admin123'
+  userName: rememberedLogin?.userName || '',
+  password: rememberedLogin?.password || '',
+  remember: rememberedLogin?.remember || false
 });
 
-const rules = computed<Record<keyof FormModel, App.Global.FormRule[]>>(() => {
+const rules = computed<Partial<Record<keyof FormModel, App.Global.FormRule[]>>>(() => {
   // inside computed to make locale reactive, if not apply i18n, you can define it without computed
   const { formRules } = useFormRules();
 
@@ -37,44 +39,33 @@ const rules = computed<Record<keyof FormModel, App.Global.FormRule[]>>(() => {
 async function handleSubmit() {
   await validate();
   await authStore.login(model.userName, model.password);
-}
 
-type AccountKey = 'admin' | 'user';
-
-interface Account {
-  key: AccountKey;
-  label: string;
-  userName: string;
-  password: string;
-}
-
-const accounts = computed<Account[]>(() => [
-  {
-    key: 'admin',
-    label: $t('page.login.pwdLogin.admin'),
-    userName: 'admin',
-    password: 'admin123'
-  },
-  {
-    key: 'user',
-    label: $t('page.login.pwdLogin.user'),
-    userName: 'testuser',
-    password: 'test123'
+  if (!authStore.isLogin) {
+    return;
   }
-]);
 
-function handleAccountLogin(account: Account) {
-  // 将账号信息填充到表单中，然后触发正常的验证流程
-  model.userName = account.userName;
-  model.password = account.password;
-  
-  // 调用正常的表单提交流程，确保验证
-  handleSubmit();
+  if (model.remember) {
+    localStg.set('rememberedLogin', {
+      userName: model.userName,
+      password: model.password,
+      remember: true
+    });
+  } else {
+    localStg.remove('rememberedLogin');
+  }
 }
 </script>
 
 <template>
-  <NForm ref="formRef" :model="model" :rules="rules" size="large" :show-label="false" @keyup.enter="handleSubmit">
+  <NForm
+    ref="formRef"
+    class="pwd-login-form"
+    :model="model"
+    :rules="rules"
+    size="large"
+    :show-label="false"
+    @keyup.enter="handleSubmit"
+  >
     <NFormItem path="userName">
       <NInput v-model:value="model.userName" :placeholder="$t('page.login.common.userNamePlaceholder')">
         <template #prefix>
@@ -94,29 +85,47 @@ function handleAccountLogin(account: Account) {
         </template>
       </NInput>
     </NFormItem>
-    <div class="flex-col gap-6">
-      <NButton type="primary" size="large" round block :loading="authStore.loginLoading" @click="handleSubmit">
+    <div class="login-options">
+      <NCheckbox v-model:checked="model.remember">记住我</NCheckbox>
+    </div>
+    <div class="login-actions">
+      <NButton type="primary" size="large" block :loading="authStore.loginLoading" @click="handleSubmit">
         {{ $t('page.login.common.login') }}
       </NButton>
-      <NButton block @click="toggleLoginModule('register')">
-        {{ $t(loginModuleRecord.register) }}
-      </NButton>
-
-      <span class="text-center">
-        登录即代表已阅读并同意我们的
-        <NButton text type="primary">用户协议</NButton>
-        和
-        <NButton text type="primary">隐私政策</NButton>
-      </span>
-
-      <NDivider class="text-14px text-#666 !m-0">{{ $t('page.login.pwdLogin.otherAccountLogin') }}</NDivider>
-      <div class="flex-center gap-12px">
-        <NButton v-for="item in accounts" :key="item.key" type="primary" @click="handleAccountLogin(item)">
-          {{ item.label }}
-        </NButton>
-      </div>
     </div>
   </NForm>
 </template>
 
-<style scoped></style>
+<style scoped lang="scss">
+.pwd-login-form {
+  :deep(.n-form-item) {
+    margin-bottom: 2px;
+  }
+
+  :deep(.n-input) {
+    height: 38px;
+    font-size: 13px;
+  }
+}
+
+.login-options {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 2px 0 18px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.login-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+
+  :deep(.n-button) {
+    height: 40px;
+    font-size: 15px;
+    letter-spacing: 0;
+  }
+}
+</style>

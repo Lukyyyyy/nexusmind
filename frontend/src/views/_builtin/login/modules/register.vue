@@ -44,7 +44,15 @@ async function handleSubmit() {
 </script>
 
 <template>
-  <NForm ref="formRef" :model="model" :rules="rules" size="large" :show-label="false" @keyup.enter="handleSubmit">
+  <NForm
+    ref="formRef"
+    class="register-form"
+    :model="model"
+    :rules="rules"
+    size="large"
+    :show-label="false"
+    @keyup.enter="handleSubmit"
+  >
     <NFormItem path="username">
       <NInput v-model:value="model.username" :placeholder="$t('page.login.common.userNamePlaceholder')">
         <template #prefix>
@@ -76,22 +84,36 @@ async function handleSubmit() {
         </template>
       </NInput>
     </NFormItem>
-    <NSpace vertical :size="18" class="w-full">
-      <NButton type="primary" size="large" round block :loading="loading" @click="handleSubmit">
+    <div class="register-actions">
+      <NButton type="primary" size="large" block :loading="loading" @click="handleSubmit">
         {{ $t('page.login.common.register') }}
       </NButton>
-      <NButton block @click="toggleLoginModule('pwd-login')">
-        {{ $t('page.login.common.back') }}
-      </NButton>
-    </NSpace>
-
-    <div class="mt-4 text-center">
-      注册即代表已阅读并同意我们的
-      <NButton text type="primary">用户协议</NButton>
-      和
-      <NButton text type="primary">隐私政策</NButton>
     </div>
   </NForm>
 </template>
 
-<style scoped></style>
+<style scoped lang="scss">
+.register-form {
+  :deep(.n-form-item) {
+    margin-bottom: 2px;
+  }
+
+  :deep(.n-input) {
+    height: 38px;
+    font-size: 13px;
+  }
+}
+
+.register-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+
+  :deep(.n-button) {
+    height: 40px;
+    font-size: 15px;
+    letter-spacing: 0;
+  }
+}
+</style>

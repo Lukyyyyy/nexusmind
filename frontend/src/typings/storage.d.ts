@@ -39,5 +39,11 @@ declare namespace StorageType {
     };
     /** The last login user id */
     lastLoginUserId: number;
+    /** Remembered password login form */
+    rememberedLogin: {
+      userName: string;
+      password: string;
+      remember: boolean;
+    };
   }
 }
