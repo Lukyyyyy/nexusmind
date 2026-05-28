@@ -1,6 +1,7 @@
 package com.luky.nexusmind.service;
 
 import com.luky.nexusmind.model.FileUpload;
+import com.luky.nexusmind.model.DocumentVector;
 import com.luky.nexusmind.model.User;
 import com.luky.nexusmind.repository.DocumentVectorRepository;
 import com.luky.nexusmind.repository.FileUploadRepository;
@@ -17,12 +18,23 @@ import org.apache.tika.sax.BodyContentHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 
 /**
  * 文档管理服务类
@@ -51,6 +63,9 @@ public class DocumentService {
 
     @Autowired
     private UserRepository userRepository;
+
+    @Value("${file.parsing.chunk-size}")
+    private int configuredChunkSize;
 
     /**
      * 删除文档及其相关数据
@@ -127,9 +142,9 @@ public class DocumentService {
         logger.info("获取用户可访问文件列表: userId={}", userId);
         
         try {
-            // 获取用户有效的组织标签（包含层级关系）
-            User user = userRepository.findByUsername(userId)
-                .orElseThrow(() -> new RuntimeException("用户不存在: " + userId));
+            User user = findUserByIdentifier(userId)
+                    .orElseThrow(() -> new RuntimeException("用户不存在: " + userId));
+            List<String> ownerIds = buildOwnerIdentifiers(user, userId);
             
             List<String> userEffectiveTags = orgTagCacheService.getUserEffectiveOrgTags(user.getUsername());
             logger.debug("用户有效组织标签: {}", userEffectiveTags);
@@ -138,11 +153,11 @@ public class DocumentService {
             List<FileUpload> files;
             if (userEffectiveTags.isEmpty()) {
                 // 如果用户没有任何组织标签，只返回自己的文件和公开文件
-                files = fileUploadRepository.findByUserIdOrIsPublicTrue(userId);
+                files = fileUploadRepository.findByUserIdsOrIsPublicTrue(ownerIds);
                 logger.debug("用户无组织标签，仅返回个人和公开文件");
             } else {
                 // 查询用户可访问的所有文件（考虑层级标签）
-                files = fileUploadRepository.findAccessibleFilesWithTags(userId, userEffectiveTags);
+                files = fileUploadRepository.findAccessibleFilesWithOwnersAndTags(ownerIds, userEffectiveTags);
                 logger.debug("使用有效组织标签查询文件");
             }
             
@@ -152,6 +167,33 @@ public class DocumentService {
             logger.error("获取用户可访问文件列表失败: userId={}", userId, e);
             throw new RuntimeException("获取可访问文件列表失败: " + e.getMessage(), e);
         }
+    }
+
+    private Optional<User> findUserByIdentifier(String identifier) {
+        if (identifier == null || identifier.isBlank()) {
+            return Optional.empty();
+        }
+
+        Optional<User> userByUsername = userRepository.findByUsername(identifier);
+        if (userByUsername.isPresent()) {
+            return userByUsername;
+        }
+
+        try {
+            return userRepository.findById(Long.parseLong(identifier));
+        } catch (NumberFormatException e) {
+            return Optional.empty();
+        }
+    }
+
+    private List<String> buildOwnerIdentifiers(User user, String currentIdentifier) {
+        Set<String> ownerIds = new LinkedHashSet<>();
+        if (currentIdentifier != null && !currentIdentifier.isBlank()) {
+            ownerIds.add(currentIdentifier);
+        }
+        ownerIds.add(user.getId().toString());
+        ownerIds.add(user.getUsername());
+        return new ArrayList<>(ownerIds);
     }
     
     /**
@@ -171,6 +213,92 @@ public class DocumentService {
             logger.error("获取用户上传的文件列表失败: userId={}", userId, e);
             throw new RuntimeException("获取用户上传的文件列表失败: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * 分页获取文件解析后的文本切片。
+     */
+    public Map<String, Object> getDocumentChunks(String fileMd5, String userId, String orgTags,
+                                                 int page, int size, String keyword) {
+        FileUpload file = getAccessibleFileOrThrow(fileMd5, userId, orgTags);
+        Pageable pageable = PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), 100));
+        Page<DocumentVector> chunkPage = keyword == null || keyword.isBlank()
+                ? documentVectorRepository.findDistinctChunksByFileMd5(fileMd5, pageable)
+                : documentVectorRepository.findDistinctChunksByFileMd5AndKeyword(fileMd5, keyword.trim(), pageable);
+
+        List<Map<String, Object>> chunks = chunkPage.getContent().stream()
+                .map(this::toChunkSummary)
+                .toList();
+
+        Map<String, Object> data = new HashMap<>();
+        data.put("fileMd5", file.getFileMd5());
+        data.put("fileName", file.getFileName());
+        data.put("configuredChunkSize", configuredChunkSize);
+        data.put("totalChunks", chunkPage.getTotalElements());
+        data.put("page", chunkPage.getNumber());
+        data.put("size", chunkPage.getSize());
+        data.put("totalPages", chunkPage.getTotalPages());
+        data.put("chunks", chunks);
+        return data;
+    }
+
+    /**
+     * 获取单个文本切片完整内容。
+     */
+    public Map<String, Object> getDocumentChunkDetail(String fileMd5, Integer chunkId, String userId, String orgTags) {
+        FileUpload file = getAccessibleFileOrThrow(fileMd5, userId, orgTags);
+        DocumentVector vector = documentVectorRepository.findByFileMd5AndChunkIdOrderByVectorIdAsc(fileMd5, chunkId).stream()
+                .findFirst()
+                .orElseThrow(() -> new RuntimeException("切片不存在"));
+
+        String content = safeText(vector.getTextContent());
+        Map<String, Object> data = toChunkSummary(vector);
+        data.put("fileName", file.getFileName());
+        data.put("content", content);
+        return data;
+    }
+
+    public Map<String, Object> getDocumentChunkSummary(String fileMd5, String userId, String orgTags) {
+        FileUpload file = getAccessibleFileOrThrow(fileMd5, userId, orgTags);
+        long totalChunks = documentVectorRepository.countDistinctChunksByFileMd5(fileMd5);
+
+        Map<String, Object> data = new HashMap<>();
+        data.put("fileMd5", file.getFileMd5());
+        data.put("fileName", file.getFileName());
+        data.put("configuredChunkSize", configuredChunkSize);
+        data.put("totalChunks", totalChunks);
+        data.put("processed", file.getStatus() == 1 && totalChunks > 0);
+        return data;
+    }
+
+    private FileUpload getAccessibleFileOrThrow(String fileMd5, String userId, String orgTags) {
+        return getAccessibleFiles(userId, orgTags).stream()
+                .filter(file -> file.getFileMd5().equals(fileMd5))
+                .findFirst()
+                .orElseThrow(() -> new RuntimeException("文件不存在或无权限访问"));
+    }
+
+    private Map<String, Object> toChunkSummary(DocumentVector vector) {
+        String content = safeText(vector.getTextContent());
+        Map<String, Object> dto = new HashMap<>();
+        dto.put("fileMd5", vector.getFileMd5());
+        dto.put("chunkId", vector.getChunkId());
+        dto.put("contentPreview", preview(content));
+        dto.put("contentLength", content.length());
+        dto.put("byteSize", content.getBytes(StandardCharsets.UTF_8).length);
+        dto.put("configuredChunkSize", configuredChunkSize);
+        dto.put("modelVersion", vector.getModelVersion());
+        return dto;
+    }
+
+    private String safeText(String text) {
+        return text == null ? "" : text;
+    }
+
+    private String preview(String content) {
+        int previewLength = Math.min(content.length(), 200);
+        String text = content.substring(0, previewLength);
+        return content.length() > previewLength ? text + "..." : text;
     }
     
     /**

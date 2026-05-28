@@ -165,6 +165,28 @@ declare namespace Api {
       objectUrl: string;
       fileSize: number;
     }
+
+    interface DocumentChunk {
+      fileMd5: string;
+      chunkId: number;
+      contentPreview: string;
+      content?: string;
+      contentLength: number;
+      byteSize: number;
+      configuredChunkSize: number;
+      modelVersion?: string | null;
+    }
+
+    interface DocumentChunkPage {
+      fileMd5: string;
+      fileName: string;
+      configuredChunkSize: number;
+      totalChunks: number;
+      page: number;
+      size: number;
+      totalPages: number;
+      chunks: DocumentChunk[];
+    }
   }
 
   namespace Chat {

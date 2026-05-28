@@ -41,6 +41,12 @@ public interface FileUploadRepository extends JpaRepository<FileUpload, Long> {
      */
     @Query("SELECT f FROM FileUpload f WHERE f.userId = :userId OR f.isPublic = true OR (f.orgTag IN :orgTagList AND f.isPublic = false)")
     List<FileUpload> findAccessibleFilesWithTags(@Param("userId") String userId, @Param("orgTagList") List<String> orgTagList);
+
+    @Query("SELECT f FROM FileUpload f WHERE f.userId IN :ownerIds OR f.isPublic = true OR (f.orgTag IN :orgTagList AND f.isPublic = false)")
+    List<FileUpload> findAccessibleFilesWithOwnersAndTags(@Param("ownerIds") List<String> ownerIds, @Param("orgTagList") List<String> orgTagList);
+
+    @Query("SELECT f FROM FileUpload f WHERE f.userId IN :ownerIds OR f.isPublic = true")
+    List<FileUpload> findByUserIdsOrIsPublicTrue(@Param("ownerIds") List<String> ownerIds);
     
     /**
      * 查询用户可访问的所有文件（原始方法，保留向后兼容性）

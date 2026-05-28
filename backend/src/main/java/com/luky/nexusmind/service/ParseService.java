@@ -70,6 +70,7 @@ public class ParseService {
                 .attribute("nexusmind.parse.chunk_size", chunkSize)
                 .attribute("nexusmind.parse.parent_chunk_size", parentChunkSize);
         try {
+        documentVectorRepository.deleteByFileMd5(fileMd5);
         checkMemoryThreshold();
         try (BufferedInputStream bufferedStream = new BufferedInputStream(fileStream, bufferSize)) {
             // 创建一个流式处理器，它会在内部处理父块的切分和子块的保存

@@ -196,6 +196,87 @@ public class DocumentController {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
         }
     }
+
+    /**
+     * 分页查看文件解析后的文本切片。
+     */
+    @GetMapping("/{fileMd5}/chunks")
+    public ResponseEntity<?> getDocumentChunks(
+            @PathVariable String fileMd5,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) String keyword,
+            @RequestAttribute("userId") String userId,
+            @RequestAttribute("orgTags") String orgTags) {
+        LogUtils.PerformanceMonitor monitor = LogUtils.startPerformanceMonitor("GET_DOCUMENT_CHUNKS");
+        try {
+            Map<String, Object> data = documentService.getDocumentChunks(fileMd5, userId, orgTags, page, size, keyword);
+            monitor.end("获取文件切片成功");
+
+            Map<String, Object> response = new HashMap<>();
+            response.put("code", 200);
+            response.put("message", "获取文件切片成功");
+            response.put("data", data);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            LogUtils.logBusinessError("GET_DOCUMENT_CHUNKS", userId, "获取文件切片失败: fileMd5=%s", e, fileMd5);
+            monitor.end("获取文件切片失败: " + e.getMessage());
+
+            Map<String, Object> response = new HashMap<>();
+            response.put("code", HttpStatus.INTERNAL_SERVER_ERROR.value());
+            response.put("message", "获取文件切片失败: " + e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
+        }
+    }
+
+    /**
+     * 查看文件切片摘要信息。
+     */
+    @GetMapping("/{fileMd5}/chunks/summary")
+    public ResponseEntity<?> getDocumentChunkSummary(
+            @PathVariable String fileMd5,
+            @RequestAttribute("userId") String userId,
+            @RequestAttribute("orgTags") String orgTags) {
+        try {
+            Map<String, Object> data = documentService.getDocumentChunkSummary(fileMd5, userId, orgTags);
+
+            Map<String, Object> response = new HashMap<>();
+            response.put("code", 200);
+            response.put("message", "获取文件切片摘要成功");
+            response.put("data", data);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("code", HttpStatus.INTERNAL_SERVER_ERROR.value());
+            response.put("message", "获取文件切片摘要失败: " + e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
+        }
+    }
+
+    /**
+     * 查看单个文本切片完整内容。
+     */
+    @GetMapping("/{fileMd5}/chunks/{chunkId}")
+    public ResponseEntity<?> getDocumentChunkDetail(
+            @PathVariable String fileMd5,
+            @PathVariable Integer chunkId,
+            @RequestAttribute("userId") String userId,
+            @RequestAttribute("orgTags") String orgTags) {
+        try {
+            Map<String, Object> data = documentService.getDocumentChunkDetail(fileMd5, chunkId, userId, orgTags);
+
+            Map<String, Object> response = new HashMap<>();
+            response.put("code", 200);
+            response.put("message", "获取文件切片详情成功");
+            response.put("data", data);
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            Map<String, Object> response = new HashMap<>();
+            response.put("code", HttpStatus.INTERNAL_SERVER_ERROR.value());
+            response.put("message", "获取文件切片详情失败: " + e.getMessage());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
+        }
+    }
     
     /**
      * 根据文件名下载文件

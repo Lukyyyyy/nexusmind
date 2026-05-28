@@ -61,6 +61,7 @@ public class OrgTagAuthorizationFilter extends OncePerRequestFilter {
                 path.matches(".*/upload/merge.*") || 
                 path.matches(".*/upload/status.*") || 
                 path.matches(".*/documents/uploads.*") ||
+                path.matches(".*/documents/[a-fA-F0-9]{32}/chunks.*") ||
                 path.matches(".*/search/hybrid.*") ||
                 (path.matches(".*/documents/[a-fA-F0-9]{32}.*") && "DELETE".equals(request.getMethod()))) {
                 
@@ -73,6 +74,8 @@ public class OrgTagAuthorizationFilter extends OncePerRequestFilter {
                     operation = "查询上传状态";
                 } else if (path.contains("/uploads")) {
                     operation = "获取用户文档";
+                } else if (path.contains("/chunks")) {
+                    operation = "查看文档切片";
                 } else if (path.contains("/search/hybrid")) {
                     operation = "混合检索";
                 } else if ("DELETE".equals(request.getMethod()) && path.matches(".*/documents/[a-fA-F0-9]{32}.*")) {
@@ -86,9 +89,11 @@ public class OrgTagAuthorizationFilter extends OncePerRequestFilter {
                 if (token != null) {
                     String userId = jwtUtils.extractUserIdFromToken(token);
                     String role = jwtUtils.extractRoleFromToken(token);
+                    String orgTags = jwtUtils.extractOrgTagsFromToken(token);
                     if (userId != null) {
                         request.setAttribute("userId", userId);
                         request.setAttribute("role", role);
+                        request.setAttribute("orgTags", orgTags);
                         logger.debug("为{}请求设置userId属性: {}, role: {}", operation, userId, role);
                     } else {
                         logger.warn("{}请求中无法从token提取userId", operation);

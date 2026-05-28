@@ -8,12 +8,16 @@ import SvgIcon from '@/components/custom/svg-icon.vue';
 import FilePreview from '@/components/custom/file-preview.vue';
 import UploadDialog from './modules/upload-dialog.vue';
 import SearchDialog from './modules/search-dialog.vue';
+import ChunkDialog from './modules/chunk-dialog.vue';
 
 const appStore = useAppStore();
 
 // 文件预览相关状态
 const previewVisible = ref(false);
 const previewFileName = ref('');
+const chunkVisible = ref(false);
+const chunkFileMd5 = ref('');
+const chunkFileName = ref('');
 
 function apiFn() {
   return fakePaginationRequest<Api.KnowledgeBase.List>({ url: '/documents/uploads' });
@@ -38,6 +42,12 @@ function handleFilePreview(fileName: string) {
 function closeFilePreview() {
   previewVisible.value = false;
   previewFileName.value = '';
+}
+
+function handleChunkView(row: Api.KnowledgeBase.UploadTask) {
+  chunkFileMd5.value = row.fileMd5;
+  chunkFileName.value = row.fileName;
+  chunkVisible.value = true;
 }
 
 const { columns, columnChecks, data, getData, loading } = useTable({
@@ -95,7 +105,7 @@ const { columns, columnChecks, data, getData, loading } = useTable({
     {
       key: 'operate',
       title: '操作',
-      width: 180,
+      width: 240,
       render: row => (
         <div class="flex gap-4">
           {renderResumeUploadButton(row)}
@@ -106,6 +116,15 @@ const { columns, columnChecks, data, getData, loading } = useTable({
             onClick={() => handleFilePreview(row.fileName)}
           >
             预览
+          </NButton>
+          <NButton
+            type="info"
+            ghost
+            size="small"
+            disabled={row.status !== UploadStatus.Completed}
+            onClick={() => handleChunkView(row)}
+          >
+            切片
           </NButton>
           <NPopconfirm onPositiveClick={() => handleDelete(row.fileMd5)}>
             {{
@@ -285,7 +304,7 @@ async function onBeforeUpload(
         :data="tasks"
         size="small"
         :flex-height="!appStore.isMobile"
-        :scroll-x="962"
+        :scroll-x="1190"
         :loading="loading"
         remote
         :row-key="row => row.id"
@@ -295,6 +314,11 @@ async function onBeforeUpload(
     </NCard>
     <UploadDialog v-model:visible="uploadVisible" />
     <SearchDialog v-model:visible="searchVisible" />
+    <ChunkDialog
+      v-model:visible="chunkVisible"
+      :file-md5="chunkFileMd5"
+      :file-name="chunkFileName"
+    />
     
     <!-- 文件预览弹窗 -->
     <NModal
