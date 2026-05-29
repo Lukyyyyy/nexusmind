@@ -1,6 +1,8 @@
 package com.luky.nexusmind.service;
 
 import com.luky.nexusmind.model.DocumentVector;
+import com.luky.nexusmind.model.DocumentContentFormat;
+import com.luky.nexusmind.model.ParseEngine;
 import com.luky.nexusmind.repository.DocumentVectorRepository;
 import org.apache.tika.exception.TikaException;
 import org.apache.tika.metadata.Metadata;
@@ -31,6 +33,12 @@ public class ParseService {
     @Autowired
     private AiTraceService aiTraceService;
 
+    @Autowired
+    private MinerUParseClient minerUParseClient;
+
+    @Autowired
+    private FileProcessingStatusService processingStatusService;
+
     @Value("${file.parsing.chunk-size}")
     private int chunkSize;
 
@@ -42,6 +50,9 @@ public class ParseService {
     
     @Value("${file.parsing.max-memory-threshold:0.8}")
     private double maxMemoryThreshold;
+
+    @Value("${file.parsing.mineru.fallback-to-tika:true}")
+    private boolean minerUFallbackToTika;
     
     public ParseService() {
         // 无需初始化，StandardTokenizer是静态方法
@@ -59,7 +70,21 @@ public class ParseService {
      * @throws IOException   如果文件读取过程中发生错误
      * @throws TikaException 如果文件解析过程中发生错误
      */
-    public void parseAndSave(String fileMd5, InputStream fileStream,
+    public int parseAndSave(String fileMd5, InputStream fileStream,
+            String userId, String orgTag, boolean isPublic) throws IOException, TikaException {
+        return parseAndSave(fileMd5, fileStream, userId, orgTag, isPublic, ParseEngine.TIKA, null);
+    }
+
+    public int parseAndSave(String fileMd5, InputStream fileStream,
+            String userId, String orgTag, boolean isPublic, ParseEngine requestedEngine, String fileName) throws IOException, TikaException {
+        ParseEngine engine = resolveEngine(requestedEngine, fileName);
+        if (engine == ParseEngine.MINERU) {
+            return parseWithMinerUAndSave(fileMd5, fileStream, userId, orgTag, isPublic, requestedEngine, fileName);
+        }
+        return parseWithTikaAndSave(fileMd5, fileStream, userId, orgTag, isPublic);
+    }
+
+    private int parseWithTikaAndSave(String fileMd5, InputStream fileStream,
             String userId, String orgTag, boolean isPublic) throws IOException, TikaException {
         logger.info("开始流式解析文件，fileMd5: {}, userId: {}, orgTag: {}, isPublic: {}",
                 fileMd5, userId, orgTag, isPublic);
@@ -84,7 +109,9 @@ public class ParseService {
             parser.parse(bufferedStream, handler, metadata, context);
 
             span.attribute("nexusmind.parse.saved_chunks", handler.getSavedChunkCount());
+            processingStatusService.markActualParseEngine(fileMd5, userId, ParseEngine.TIKA);
             logger.info("文件流式解析和入库完成，fileMd5: {}", fileMd5);
+            return handler.getSavedChunkCount();
 
         } catch (SAXException e) {
             span.error(e);
@@ -100,12 +127,81 @@ public class ParseService {
         }
     }
 
+    private int parseWithMinerUAndSave(String fileMd5, InputStream fileStream,
+            String userId, String orgTag, boolean isPublic, ParseEngine requestedEngine, String fileName) throws IOException, TikaException {
+        logger.info("开始使用MinerU解析文件，fileMd5: {}, fileName: {}, userId: {}, orgTag: {}, isPublic: {}",
+                fileMd5, fileName, userId, orgTag, isPublic);
+
+        byte[] fileBytes = fileStream.readAllBytes();
+        AiTraceService.TraceSpan span = aiTraceService.startFileSpan("file.parse.mineru", userId, fileMd5, fileName)
+                .attribute("nexusmind.org_tag", orgTag)
+                .attribute("nexusmind.upload.is_public", isPublic)
+                .attribute("nexusmind.parse.chunk_size", chunkSize)
+                .attribute("nexusmind.parse.parent_chunk_size", parentChunkSize)
+                .attribute("nexusmind.parse.requested_engine", requestedEngine != null ? requestedEngine.name() : ParseEngine.AUTO.name());
+        try {
+            documentVectorRepository.deleteByFileMd5(fileMd5);
+            checkMemoryThreshold();
+
+            String parsedMarkdown = minerUParseClient.parseToText(fileBytes, fileName);
+            int savedChunks = saveParsedMarkdown(fileMd5, parsedMarkdown, userId, orgTag, isPublic);
+            span.attribute("nexusmind.parse.saved_chunks", savedChunks)
+                    .attribute("nexusmind.parse.engine", ParseEngine.MINERU.name());
+            processingStatusService.markActualParseEngine(fileMd5, userId, ParseEngine.MINERU);
+            logger.info("MinerU解析和入库完成，fileMd5: {}, chunks: {}", fileMd5, savedChunks);
+            return savedChunks;
+        } catch (Exception e) {
+            span.error(e);
+            if (shouldFallbackMinerUToTika(requestedEngine)) {
+                logger.warn("MinerU解析失败，AUTO策略将回退到Tika，fileMd5: {}, fileName: {}, reason: {}",
+                        fileMd5, fileName, e.getMessage());
+                return parseWithTikaAndSave(fileMd5, new ByteArrayInputStream(fileBytes), userId, orgTag, isPublic);
+            }
+            if (e instanceof IOException ioException) {
+                throw ioException;
+            }
+            throw new RuntimeException("MinerU解析失败", e);
+        } finally {
+            span.end();
+            span.close();
+        }
+    }
+
+    private boolean shouldFallbackMinerUToTika(ParseEngine requestedEngine) {
+        if (!minerUFallbackToTika) {
+            return false;
+        }
+        ParseEngine engine = requestedEngine == null ? ParseEngine.AUTO : requestedEngine;
+        return engine == ParseEngine.AUTO;
+    }
+
+    private ParseEngine resolveEngine(ParseEngine requestedEngine, String fileName) {
+        ParseEngine engine = requestedEngine == null ? ParseEngine.AUTO : requestedEngine;
+        if (engine == ParseEngine.AUTO) {
+            return shouldUseMinerUByDefault(fileName) && minerUParseClient.isEnabled()
+                    ? ParseEngine.MINERU
+                    : ParseEngine.TIKA;
+        }
+        return engine;
+    }
+
+    private boolean shouldUseMinerUByDefault(String fileName) {
+        if (fileName == null) {
+            return false;
+        }
+        int dotIndex = fileName.lastIndexOf('.');
+        if (dotIndex < 0 || dotIndex == fileName.length() - 1) {
+            return false;
+        }
+        return "pdf".equalsIgnoreCase(fileName.substring(dotIndex + 1));
+    }
+
     /**
      * 兼容旧版本的解析方法
      */
-    public void parseAndSave(String fileMd5, InputStream fileStream) throws IOException, TikaException {
+    public int parseAndSave(String fileMd5, InputStream fileStream) throws IOException, TikaException {
         // 使用默认值调用新方法
-        parseAndSave(fileMd5, fileStream, "unknown", "DEFAULT", false);
+        return parseAndSave(fileMd5, fileStream, "unknown", "DEFAULT", false);
     }
 
     private void checkMemoryThreshold() {
@@ -177,7 +273,8 @@ public class ParseService {
             List<String> childChunks = ParseService.this.splitTextIntoChunksWithSemantics(parentChunkText, chunkSize);
 
             // 2. 将子切片批量保存到数据库
-            this.savedChunkCount = ParseService.this.saveChildChunks(fileMd5, childChunks, userId, orgTag, isPublic, this.savedChunkCount);
+            this.savedChunkCount = ParseService.this.saveChildChunks(fileMd5, childChunks, userId, orgTag,
+                    isPublic, DocumentContentFormat.PLAIN_TEXT, this.savedChunkCount);
 
             // 3. 清空缓冲区，为下一个父块做准备
             buffer.setLength(0);
@@ -200,7 +297,7 @@ public class ParseService {
      * @return 保存后总的分片数量
      */
     private int saveChildChunks(String fileMd5, List<String> chunks,
-            String userId, String orgTag, boolean isPublic, int startingChunkId) {
+            String userId, String orgTag, boolean isPublic, DocumentContentFormat contentFormat, int startingChunkId) {
         int currentChunkId = startingChunkId;
         
         // 批量写入优化：先收集所有 DocumentVector 对象，再一次性批量保存
@@ -211,6 +308,7 @@ public class ParseService {
             vector.setFileMd5(fileMd5);
             vector.setChunkId(currentChunkId);
             vector.setTextContent(chunk);
+            vector.setContentFormat(contentFormat == null ? DocumentContentFormat.PLAIN_TEXT : contentFormat);
             vector.setUserId(userId);
             vector.setOrgTag(orgTag);
             vector.setPublic(isPublic);
@@ -233,6 +331,186 @@ public class ParseService {
         
         logger.info("成功批量保存 {} 个子切片到数据库", chunks.size());
         return currentChunkId;
+    }
+
+    private int saveParsedMarkdown(String fileMd5, String parsedText, String userId, String orgTag, boolean isPublic) {
+        List<String> chunks = splitMarkdownIntoChunks(parsedText == null ? "" : parsedText, chunkSize);
+        return saveChildChunks(fileMd5, chunks, userId, orgTag, isPublic, DocumentContentFormat.MARKDOWN, 0);
+    }
+
+    private int saveParsedText(String fileMd5, String parsedText, String userId, String orgTag, boolean isPublic) {
+        List<String> chunks = splitTextIntoChunksWithSemantics(parsedText == null ? "" : parsedText, chunkSize);
+        return saveChildChunks(fileMd5, chunks, userId, orgTag, isPublic, DocumentContentFormat.PLAIN_TEXT, 0);
+    }
+
+    /**
+     * Markdown切片优先按块边界切分，避免把标题、表格、代码块拆得过碎。
+     */
+    private List<String> splitMarkdownIntoChunks(String markdown, int chunkSize) {
+        List<String> chunks = new ArrayList<>();
+        List<String> blocks = splitMarkdownBlocks(markdown);
+        StringBuilder currentChunk = new StringBuilder();
+        String headingContext = "";
+
+        for (String block : blocks) {
+            String normalizedBlock = block.trim();
+            if (normalizedBlock.isBlank()) {
+                continue;
+            }
+
+            if (isMarkdownHeading(normalizedBlock)) {
+                if (!currentChunk.isEmpty()) {
+                    chunks.add(currentChunk.toString().trim());
+                    currentChunk = new StringBuilder();
+                }
+                headingContext = updateMarkdownHeadingContext(headingContext, normalizedBlock);
+                currentChunk.append(normalizedBlock);
+                continue;
+            }
+
+            String blockToAppend = currentChunk.isEmpty() && !headingContext.isBlank()
+                    ? headingContext + "\n\n" + normalizedBlock
+                    : normalizedBlock;
+
+            if (currentChunk.length() + separatorLength(currentChunk) + blockToAppend.length() <= chunkSize) {
+                appendMarkdownBlock(currentChunk, blockToAppend);
+                continue;
+            }
+
+            if (!currentChunk.isEmpty()) {
+                chunks.add(currentChunk.toString().trim());
+                currentChunk = new StringBuilder();
+            }
+
+            if (blockToAppend.length() <= chunkSize) {
+                currentChunk.append(blockToAppend);
+            } else {
+                chunks.addAll(splitLongMarkdownBlock(blockToAppend, headingContext, chunkSize));
+            }
+        }
+
+        if (!currentChunk.isEmpty()) {
+            chunks.add(currentChunk.toString().trim());
+        }
+
+        return chunks;
+    }
+
+    private List<String> splitMarkdownBlocks(String markdown) {
+        List<String> blocks = new ArrayList<>();
+        String[] lines = markdown.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1);
+        StringBuilder block = new StringBuilder();
+        boolean inCodeFence = false;
+
+        for (String line : lines) {
+            if (line.trim().startsWith("```")) {
+                inCodeFence = !inCodeFence;
+                appendLine(block, line);
+                continue;
+            }
+
+            if (!inCodeFence && line.isBlank()) {
+                if (!block.isEmpty()) {
+                    blocks.add(block.toString());
+                    block = new StringBuilder();
+                }
+                continue;
+            }
+
+            appendLine(block, line);
+        }
+
+        if (!block.isEmpty()) {
+            blocks.add(block.toString());
+        }
+        return blocks;
+    }
+
+    private boolean isMarkdownHeading(String block) {
+        return block.matches("(?s)^#{1,6}\\s+.+");
+    }
+
+    private String updateMarkdownHeadingContext(String currentContext, String heading) {
+        int level = 0;
+        while (level < heading.length() && heading.charAt(level) == '#') {
+            level++;
+        }
+
+        List<String> headings = new ArrayList<>();
+        if (currentContext != null && !currentContext.isBlank()) {
+            headings.addAll(List.of(currentContext.split("\\n")));
+        }
+        int currentLevel = level;
+        headings.removeIf(existing -> markdownHeadingLevel(existing) >= currentLevel);
+        headings.add(heading.lines().findFirst().orElse(heading));
+        return String.join("\n", headings);
+    }
+
+    private int markdownHeadingLevel(String heading) {
+        int level = 0;
+        while (level < heading.length() && heading.charAt(level) == '#') {
+            level++;
+        }
+        return level == 0 ? Integer.MAX_VALUE : level;
+    }
+
+    private int separatorLength(StringBuilder builder) {
+        return builder.isEmpty() ? 0 : 2;
+    }
+
+    private void appendMarkdownBlock(StringBuilder builder, String block) {
+        if (!builder.isEmpty()) {
+            builder.append("\n\n");
+        }
+        builder.append(block);
+    }
+
+    private void appendLine(StringBuilder builder, String line) {
+        if (!builder.isEmpty()) {
+            builder.append('\n');
+        }
+        builder.append(line);
+    }
+
+    private List<String> splitLongMarkdownBlock(String block, String headingContext, int chunkSize) {
+        if (isMarkdownTable(block)) {
+            return splitMarkdownTable(block, headingContext, chunkSize);
+        }
+        return splitLongParagraph(block, chunkSize);
+    }
+
+    private boolean isMarkdownTable(String block) {
+        String[] lines = block.split("\\n");
+        return lines.length >= 2 && lines[0].contains("|") && lines[1].matches("\\s*\\|?\\s*:?-{3,}:?\\s*(\\|\\s*:?-{3,}:?\\s*)+\\|?\\s*");
+    }
+
+    private List<String> splitMarkdownTable(String table, String headingContext, int chunkSize) {
+        List<String> chunks = new ArrayList<>();
+        String[] lines = table.split("\\n");
+        String header = lines[0] + "\n" + lines[1];
+        StringBuilder current = new StringBuilder();
+        if (headingContext != null && !headingContext.isBlank()) {
+            current.append(headingContext).append("\n\n");
+        }
+        current.append(header);
+
+        for (int i = 2; i < lines.length; i++) {
+            String nextLine = lines[i];
+            if (current.length() + 1 + nextLine.length() > chunkSize && current.length() > header.length()) {
+                chunks.add(current.toString().trim());
+                current = new StringBuilder();
+                if (headingContext != null && !headingContext.isBlank()) {
+                    current.append(headingContext).append("\n\n");
+                }
+                current.append(header);
+            }
+            current.append('\n').append(nextLine);
+        }
+
+        if (!current.isEmpty()) {
+            chunks.add(current.toString().trim());
+        }
+        return chunks;
     }
 
     /**

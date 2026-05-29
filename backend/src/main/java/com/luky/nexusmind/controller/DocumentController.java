@@ -1,10 +1,18 @@
 package com.luky.nexusmind.controller;
 
 import com.luky.nexusmind.model.FileUpload;
+import com.luky.nexusmind.model.FileProcessingStatus;
 import com.luky.nexusmind.model.OrganizationTag;
+import com.luky.nexusmind.model.ProcessingStage;
+import com.luky.nexusmind.model.ProcessingState;
+import com.luky.nexusmind.repository.DocumentVectorRepository;
 import com.luky.nexusmind.repository.FileUploadRepository;
 import com.luky.nexusmind.repository.OrganizationTagRepository;
+import com.luky.nexusmind.repository.UserRepository;
 import com.luky.nexusmind.service.DocumentService;
+import com.luky.nexusmind.service.ElasticsearchService;
+import com.luky.nexusmind.service.FileProcessingStatusService;
+import com.luky.nexusmind.service.ProcessingStatusEventService;
 import com.luky.nexusmind.utils.LogUtils;
 import com.luky.nexusmind.utils.JwtUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,12 +43,27 @@ public class DocumentController {
 
     @Autowired
     private DocumentService documentService;
+
+    @Autowired
+    private FileProcessingStatusService processingStatusService;
+
+    @Autowired
+    private ProcessingStatusEventService processingStatusEventService;
     
     @Autowired
     private FileUploadRepository fileUploadRepository;
+
+    @Autowired
+    private DocumentVectorRepository documentVectorRepository;
+
+    @Autowired
+    private ElasticsearchService elasticsearchService;
     
     @Autowired
     private OrganizationTagRepository organizationTagRepository;
+
+    @Autowired
+    private UserRepository userRepository;
     
     @Autowired
     private JwtUtils jwtUtils;
@@ -158,6 +181,10 @@ public class DocumentController {
             LogUtils.logBusiness("GET_USER_UPLOADED_FILES", userId, "接收到获取用户上传文件请求");
             
             List<FileUpload> files = documentService.getUserUploadedFiles(userId);
+            Map<String, FileProcessingStatus> processingStatusMap = processingStatusService.findLatestByFileMd5(
+                    files.stream().map(FileUpload::getFileMd5).collect(Collectors.toSet()),
+                    userId
+            );
             
             // 将FileUpload转换为包含tagName的DTO
             List<Map<String, Object>> fileData = files.stream().map(file -> {
@@ -167,9 +194,16 @@ public class DocumentController {
                 dto.put("totalSize", file.getTotalSize());
                 dto.put("status", file.getStatus());
                 dto.put("userId", file.getUserId());
+                dto.put("uploaderName", resolveUploaderName(file.getUserId()));
                 dto.put("public", file.isPublic());
                 dto.put("createdAt", file.getCreatedAt());
                 dto.put("mergedAt", file.getMergedAt());
+                FileProcessingStatus processingStatus = processingStatusMap.get(file.getFileMd5());
+                if (processingStatus != null) {
+                    dto.putAll(processingStatusEventService.toPayload(processingStatus));
+                } else {
+                    fillLegacyProcessingStatus(dto, file);
+                }
                 
                 // 将orgTag从tagId转换为tagName
                 String orgTagName = getOrgTagName(file.getOrgTag());
@@ -195,6 +229,59 @@ public class DocumentController {
             response.put("message", "获取用户上传文件列表失败: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
         }
+    }
+
+    private void fillLegacyProcessingStatus(Map<String, Object> dto, FileUpload file) {
+        if (file.getStatus() != 1) {
+            return;
+        }
+
+        long parsedChunkCount = documentVectorRepository.countDistinctChunksByFileMd5(file.getFileMd5());
+        if (parsedChunkCount <= 0) {
+            dto.put("processingStage", ProcessingStage.QUEUED);
+            dto.put("processingState", ProcessingState.PENDING);
+            dto.put("processingMessage", "等待处理");
+            dto.put("parsedChunkCount", 0);
+            dto.put("vectorizedCount", 0);
+            dto.put("esDocumentCount", 0L);
+            return;
+        }
+
+        long esDocumentCount;
+        try {
+            esDocumentCount = elasticsearchService.countByFileMd5(file.getFileMd5());
+        } catch (Exception e) {
+            esDocumentCount = 0;
+        }
+
+        dto.put("parsedChunkCount", parsedChunkCount);
+        dto.put("vectorizedCount", esDocumentCount);
+        dto.put("esDocumentCount", esDocumentCount);
+        if (esDocumentCount > 0) {
+            dto.put("processingStage", ProcessingStage.COMPLETED);
+            dto.put("processingState", ProcessingState.SUCCEEDED);
+            dto.put("processingMessage", "历史文件已入库");
+        } else {
+            dto.put("processingStage", ProcessingStage.CHUNKING);
+            dto.put("processingState", ProcessingState.PENDING);
+            dto.put("processingMessage", "历史文件已切片，未检测到向量索引");
+        }
+    }
+
+    private String resolveUploaderName(String userId) {
+        if (userId == null || userId.isBlank()) {
+            return "-";
+        }
+        try {
+            return userRepository.findById(Long.parseLong(userId))
+                    .map(user -> user.getUsername())
+                    .orElse(userId);
+        } catch (NumberFormatException ignored) {
+            // Older records may store username directly in file_upload.user_id.
+        }
+        return userRepository.findByUsername(userId)
+                .map(user -> user.getUsername())
+                .orElse(userId);
     }
 
     /**

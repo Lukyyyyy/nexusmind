@@ -15,3 +15,9 @@ export const enableStatusOptions = [
 export const chunkSize = 5 * 1024 * 1024;
 
 export const uploadAccept = '.pdf,.doc,.docx,.txt';
+
+export const parseEngineOptions = [
+  { label: '自动选择（推荐）', value: 'AUTO' },
+  { label: '快速解析（Apache Tika）', value: 'TIKA' },
+  { label: '高精度解析（MinerU）', value: 'MINERU' }
+];

@@ -40,6 +40,15 @@ public class KafkaConfig {
     @Value("${spring.kafka.consumer.properties.spring.json.trusted.packages}")
     private String trustedPackages;
 
+    @Value("${spring.kafka.consumer.properties.client.dns.lookup:use_all_dns_ips}")
+    private String clientDnsLookup;
+
+    @Value("${spring.kafka.consumer.properties.max.poll.interval.ms:1800000}")
+    private Integer maxPollIntervalMs;
+
+    @Value("${spring.kafka.consumer.properties.max.poll.records:1}")
+    private Integer maxPollRecords;
+
 
     public String getFileProcessingTopic() {
         return fileProcessingTopic;
@@ -80,6 +89,10 @@ public class KafkaConfig {
         config.put(ConsumerConfig.GROUP_ID_CONFIG, fileProcessingGroupId);
         config.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
         config.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, JsonDeserializer.class);
+        config.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, autoOffsetReset);
+        config.put(ConsumerConfig.CLIENT_DNS_LOOKUP_CONFIG, clientDnsLookup);
+        config.put(ConsumerConfig.MAX_POLL_INTERVAL_MS_CONFIG, maxPollIntervalMs);
+        config.put(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, maxPollRecords);
         config.put(JsonDeserializer.TRUSTED_PACKAGES, trustedPackages);
         return new DefaultKafkaConsumerFactory<>(config);
     }

@@ -17,16 +17,23 @@ public class FileProcessingTask {
     private String userId;   // 上传用户ID
     private String orgTag;   // 文件所属组织标签
     private boolean isPublic; // 文件是否公开
+    private ParseEngine parseEngine = ParseEngine.AUTO; // 文档解析引擎
     private String traceparent; // OpenTelemetry trace context
 
     public FileProcessingTask(String fileMd5, String filePath, String fileName,
                               String userId, String orgTag, boolean isPublic) {
+        this(fileMd5, filePath, fileName, userId, orgTag, isPublic, ParseEngine.AUTO);
+    }
+
+    public FileProcessingTask(String fileMd5, String filePath, String fileName,
+                              String userId, String orgTag, boolean isPublic, ParseEngine parseEngine) {
         this.fileMd5 = fileMd5;
         this.filePath = filePath;
         this.fileName = fileName;
         this.userId = userId;
         this.orgTag = orgTag;
         this.isPublic = isPublic;
+        this.parseEngine = parseEngine == null ? ParseEngine.AUTO : parseEngine;
     }
     
     /**
@@ -39,5 +46,6 @@ public class FileProcessingTask {
         this.userId = null;
         this.orgTag = "DEFAULT";
         this.isPublic = false;
+        this.parseEngine = ParseEngine.AUTO;
     }
 }

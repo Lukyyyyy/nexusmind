@@ -136,6 +136,10 @@ public class EmbeddingClient {
             logger.debug("调用向量 API, 批次: {} (size={})", batchIndex, batch.size());
             String response = callApiOnce(batch);
             return parseVectors(response);
+        } catch (WebClientResponseException e) {
+            logger.error("向量化批次失败: batchIndex={}, status={}, responseBody={}",
+                    batchIndex, e.getStatusCode(), e.getResponseBodyAsString());
+            throw new RuntimeException("向量化批次失败: " + batchIndex, e);
         } catch (Exception e) {
             throw new RuntimeException("向量化批次失败: " + batchIndex, e);
         }
@@ -154,7 +158,7 @@ public class EmbeddingClient {
         Map<String, Object> requestBody = new HashMap<>();
         requestBody.put("model", modelId);
         requestBody.put("input", batch);
-        requestBody.put("dimension", dimension);  // 直接在根级别设置dimension
+        requestBody.put("dimensions", dimension);
         requestBody.put("encoding_format", "float");  // 添加编码格式
 
         return webClient.post()
@@ -163,7 +167,8 @@ public class EmbeddingClient {
                 .retrieve()
                 .bodyToMono(String.class)
                 .retryWhen(Retry.fixedDelay(3, Duration.ofSeconds(1))
-                        .filter(e -> e instanceof WebClientResponseException))
+                        .filter(e -> e instanceof WebClientResponseException responseException
+                                && responseException.getStatusCode().is5xxServerError()))
                 .block(Duration.ofSeconds(30));
     }
 

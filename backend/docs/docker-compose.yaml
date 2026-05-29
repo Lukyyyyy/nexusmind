@@ -153,9 +153,55 @@ services:
       timeout: 10s
       retries: 3
 
+  mineru-api:
+    image: mineru:latest
+    build:
+      context: ./mineru
+      dockerfile: Dockerfile
+      args:
+        APT_MIRROR: ${MINERU_APT_MIRROR:-https://mirrors.aliyun.com/ubuntu}
+        HTTP_PROXY: ${MINERU_HTTP_PROXY:-}
+        HTTPS_PROXY: ${MINERU_HTTPS_PROXY:-}
+    container_name: mineru-api
+    restart: "on-failure:3"
+    profiles:
+      - mineru
+    ports:
+      - "${MINERU_API_HOST_PORT:-18000}:8000"
+    environment:
+      MINERU_MODEL_SOURCE: ${MINERU_MODEL_SOURCE:-local}
+      MINERU_API_ENABLE_FASTAPI_DOCS: ${MINERU_API_ENABLE_FASTAPI_DOCS:-1}
+      MINERU_MODEL_DOWNLOAD_SOURCE: ${MINERU_MODEL_DOWNLOAD_SOURCE:-huggingface}
+      MINERU_MODEL_DOWNLOAD_TYPE: ${MINERU_MODEL_DOWNLOAD_TYPE:-pipeline}
+      MINERU_SKIP_MODEL_DOWNLOAD: ${MINERU_SKIP_MODEL_DOWNLOAD:-false}
+      MINERU_HTTP_PROXY: ${MINERU_HTTP_PROXY:-}
+      MINERU_HTTPS_PROXY: ${MINERU_HTTPS_PROXY:-}
+      MINERU_NO_PROXY: ${MINERU_NO_PROXY:-localhost,127.0.0.1}
+    volumes:
+      - mineru-output:/app/output
+      - mineru-cache:/root/.cache
+    command:
+      - mineru-api
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    ipc: host
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/openapi.json || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30m
+
 volumes:
   redis-data:
   mysql-data:
   minio-data:
   kafka-data:
   es-data:
+  mineru-output:
+  mineru-cache:

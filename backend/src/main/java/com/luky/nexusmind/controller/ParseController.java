@@ -1,5 +1,6 @@
 package com.luky.nexusmind.controller;
 
+import com.luky.nexusmind.model.ParseEngine;
 import com.luky.nexusmind.service.ParseService;
 import com.luky.nexusmind.utils.LogUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -17,6 +18,7 @@ public class ParseController {
     @PostMapping
     public ResponseEntity<String> parseDocument(@RequestParam("file") MultipartFile file,
                                                 @RequestParam("file_md5") String fileMd5,
+                                                @RequestParam(value = "parseEngine", required = false, defaultValue = "AUTO") String parseEngine,
                                                 @RequestAttribute(value = "userId", required = false) String userId) {
         LogUtils.PerformanceMonitor monitor = LogUtils.startPerformanceMonitor("PARSE_DOCUMENT");
         try {
@@ -24,7 +26,9 @@ public class ParseController {
                     "开始解析文档: fileMd5=%s, fileName=%s, fileSize=%d", 
                     fileMd5, file.getOriginalFilename(), file.getSize());
             
-            parseService.parseAndSave(fileMd5, file.getInputStream());
+            parseService.parseAndSave(fileMd5, file.getInputStream(),
+                    userId != null ? userId : "unknown", "DEFAULT", false,
+                    ParseEngine.fromNullable(parseEngine), file.getOriginalFilename());
             
             LogUtils.logFileOperation(userId != null ? userId : "system", "PARSE", 
                     file.getOriginalFilename(), fileMd5, "SUCCESS");

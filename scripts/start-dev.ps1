@@ -1,5 +1,7 @@
 param(
   [switch]$NoInfra,
+  [switch]$SkipMinerU,
+  [switch]$RequireMinerU,
   [string]$BackendProfile = "docker"
 )
 
@@ -8,7 +10,14 @@ $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 . (Join-Path $Root "scripts\lib\env.ps1") -Root $Root
 
 if (-not $NoInfra) {
-  & (Join-Path $Root "scripts\start-infra.ps1")
+  $infraArgs = @()
+  if ($SkipMinerU) {
+    $infraArgs += "-SkipMinerU"
+  }
+  if ($RequireMinerU) {
+    $infraArgs += "-RequireMinerU"
+  }
+  & (Join-Path $Root "scripts\start-infra.ps1") @infraArgs
 }
 
 $pwsh = (Get-Command pwsh -ErrorAction SilentlyContinue).Source

@@ -1,5 +1,7 @@
 param(
-  [switch]$SkipInit
+  [switch]$SkipInit,
+  [switch]$SkipMinerU,
+  [switch]$RequireMinerU
 )
 
 $ErrorActionPreference = "Stop"
@@ -8,7 +10,7 @@ $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 
 $composeDir = Join-Path $Root "backend\docs"
 
-Write-Host "Starting NexusMind infrastructure..." -ForegroundColor Cyan
+Write-Host "Starting NexusMind core infrastructure..." -ForegroundColor Cyan
 & docker compose -f (Join-Path $composeDir "docker-compose.yaml") up -d
 if ($LASTEXITCODE -ne 0) {
   throw "docker compose failed with exit code $LASTEXITCODE."
@@ -44,4 +46,17 @@ Write-Host "Preparing MinIO bucket uploads..." -ForegroundColor Cyan
 if ($LASTEXITCODE -ne 0) {
   Write-Warning "MinIO bucket initialization did not complete. You may need to create bucket 'uploads' manually."
 }
+
+if (-not $SkipMinerU) {
+  Write-Host "Starting MinerU service..." -ForegroundColor Cyan
+  & docker compose -f (Join-Path $composeDir "docker-compose.yaml") --profile mineru up -d mineru-api
+  if ($LASTEXITCODE -ne 0) {
+    $message = "MinerU service did not start. Tika parsing and the rest of NexusMind can still run; choose MinerU only after mineru-api is ready."
+    if ($RequireMinerU) {
+      throw $message
+    }
+    Write-Warning $message
+  }
+}
+
 Write-Host "Infrastructure startup requested. Check with: docker ps" -ForegroundColor Green

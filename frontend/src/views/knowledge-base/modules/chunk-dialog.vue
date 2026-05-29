@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { DataTableColumns, PaginationProps } from 'naive-ui';
+import { VueMarkdownIt } from 'vue-markdown-shiki';
 
 defineOptions({
   name: 'ChunkDialog'
@@ -10,6 +11,7 @@ const visible = defineModel<boolean>('visible', { default: false });
 const props = defineProps<{
   fileMd5: string;
   fileName: string;
+  actualParseEngine?: Api.KnowledgeBase.UploadTask['actualParseEngine'];
 }>();
 
 const loading = ref(false);
@@ -24,6 +26,9 @@ const pagination = reactive<PaginationProps>({
   showSizePicker: true,
   pageSizes: [10, 20, 50]
 });
+
+const actualParseEngine = computed(() => chunkPage.value?.actualParseEngine ?? props.actualParseEngine ?? null);
+const isSelectedMarkdown = computed(() => selectedChunk.value?.contentFormat === 'MARKDOWN');
 
 const columns: DataTableColumns<Api.KnowledgeBase.DocumentChunk> = [
   {
@@ -123,6 +128,22 @@ function formatByteSize(size: number) {
   return `${(size / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
+function formatParseEngine(engine?: Api.KnowledgeBase.UploadTask['actualParseEngine']) {
+  const record: Record<string, string> = {
+    MINERU: 'MinerU',
+    TIKA: 'Apache Tika',
+    AUTO: '自动'
+  };
+  return engine ? record[engine] || engine : '未知';
+}
+
+function parseEngineTagType(engine?: Api.KnowledgeBase.UploadTask['actualParseEngine']) {
+  if (engine === 'MINERU') return 'success';
+  if (engine === 'TIKA') return 'info';
+  if (engine === 'AUTO') return 'warning';
+  return 'default';
+}
+
 function rowProps(row: Api.KnowledgeBase.DocumentChunk) {
   return {
     class: 'cursor-pointer',
@@ -163,6 +184,7 @@ watch(visible, show => {
         <NSpace size="small">
           <NTag type="info">总切片：{{ chunkPage?.totalChunks ?? 0 }}</NTag>
           <NTag>chunkSize：{{ chunkPage?.configuredChunkSize ?? '-' }}</NTag>
+          <NTag :type="parseEngineTagType(actualParseEngine)">解析：{{ formatParseEngine(actualParseEngine) }}</NTag>
         </NSpace>
         <NSpace size="small">
           <NInput
@@ -206,6 +228,9 @@ watch(visible, show => {
           <div class="flex shrink-0 items-center justify-between border-b border-[var(--n-border-color)] px-12px py-8px">
             <NSpace size="small">
               <NTag v-if="selectedChunk" type="success">#{{ selectedChunk.chunkId }}</NTag>
+              <NTag v-if="selectedChunk" :type="isSelectedMarkdown ? 'success' : 'default'">
+                {{ isSelectedMarkdown ? 'Markdown' : 'Plain text' }}
+              </NTag>
               <NTag v-if="selectedChunk">字符：{{ selectedChunk.contentLength }}</NTag>
               <NTag v-if="selectedChunk">大小：{{ formatByteSize(selectedChunk.byteSize) }}</NTag>
               <NSpin v-if="detailLoading" size="small" />
@@ -219,6 +244,9 @@ watch(visible, show => {
           </div>
           <div class="chunk-detail-scroll min-h-0 flex-1 overflow-y-auto">
             <NEmpty v-if="!selectedChunk" description="暂无切片内容" class="py-80px" />
+            <div v-else-if="isSelectedMarkdown" class="markdown-body chunk-markdown p-12px text-13px leading-6">
+              <VueMarkdownIt :content="selectedChunk.content || ''" />
+            </div>
             <pre v-else class="m-0 whitespace-pre-wrap break-words p-12px text-13px leading-6">{{
               selectedChunk.content
             }}</pre>
@@ -245,5 +273,18 @@ watch(visible, show => {
 .chunk-main,
 .chunk-detail-panel {
   height: 100%;
+}
+
+.chunk-markdown {
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+}
+
+.chunk-markdown :deep(table) {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: nowrap;
 }
 </style>

@@ -2,6 +2,7 @@ package com.luky.nexusmind.service;
 
 import com.luky.nexusmind.client.EmbeddingClient;
 import com.luky.nexusmind.model.DocumentVector;
+import com.luky.nexusmind.model.ProcessingStage;
 import com.luky.nexusmind.entity.EsDocument;
 import com.luky.nexusmind.entity.TextChunk;
 import com.luky.nexusmind.repository.DocumentVectorRepository;
@@ -32,6 +33,9 @@ public class VectorizationService {
     @Autowired
     private AiTraceService aiTraceService;
 
+    @Autowired
+    private FileProcessingStatusService processingStatusService;
+
     /**
      * 执行向量化操作
      * @param fileMd5 文件指纹
@@ -39,7 +43,7 @@ public class VectorizationService {
      * @param orgTag 组织标签
      * @param isPublic 是否公开
      */
-    public void vectorize(String fileMd5, String userId, String orgTag, boolean isPublic) {
+    public int vectorize(String fileMd5, String userId, String orgTag, boolean isPublic) {
         AiTraceService.TraceSpan span = aiTraceService.startFileSpan("file.vectorize", userId, fileMd5, null)
                 .attribute("nexusmind.org_tag", orgTag)
                 .attribute("nexusmind.upload.is_public", isPublic);
@@ -64,7 +68,7 @@ public class VectorizationService {
             if (chunks == null || chunks.isEmpty()) {
                 logger.warn("未找到分块内容，fileMd5: {}", fileMd5);
                 span.attribute("nexusmind.vectorize.status", "no_chunks");
-                return;
+                throw new IllegalStateException("未找到分块内容，无法向量化");
             }
             span.attribute("nexusmind.vectorize.chunk.count", chunks.size());
 
@@ -103,10 +107,12 @@ public class VectorizationService {
                 buildSpan.close();
             }
 
+            processingStatusService.markRunning(fileMd5, userId, ProcessingStage.INDEXING, "正在写入检索索引");
             elasticsearchService.bulkIndex(esDocuments); // 批量存储到 Elasticsearch
 
             span.attribute("nexusmind.vectorize.status", "success");
             logger.info("向量化完成，fileMd5: {}", fileMd5);
+            return esDocuments.size();
         } catch (Exception e) {
             span.error(e);
             span.attribute("nexusmind.vectorize.status", "failed");

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { uploadAccept } from '@/constants/common';
+import { parseEngineOptions, uploadAccept } from '@/constants/common';
 
 defineOptions({
   name: 'UploadDialog'
@@ -20,6 +20,7 @@ function createDefaultModel(): Api.KnowledgeBase.Form {
     orgTag: null,
     orgTagName: '',
     isPublic: false,
+    parseEngine: 'AUTO',
     fileList: []
   };
 }
@@ -27,6 +28,7 @@ function createDefaultModel(): Api.KnowledgeBase.Form {
 const rules = ref<FormRules>({
   orgTag: defaultRequiredRule,
   isPublic: defaultRequiredRule,
+  parseEngine: defaultRequiredRule,
   fileList: defaultRequiredRule
 });
 
@@ -85,6 +87,15 @@ function onUpdate(option: unknown) {
           <NSpace :size="16">
             <NRadio :value="true">公开</NRadio>
             <NRadio :value="false">私有</NRadio>
+          </NSpace>
+        </NRadioGroup>
+      </NFormItem>
+      <NFormItem label="解析方式" path="parseEngine">
+        <NRadioGroup v-model:value="model.parseEngine" name="parseEngine">
+          <NSpace vertical :size="10">
+            <NRadio v-for="option in parseEngineOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </NRadio>
           </NSpace>
         </NRadioGroup>
       </NFormItem>

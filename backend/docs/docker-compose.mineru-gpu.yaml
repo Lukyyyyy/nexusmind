@@ -1,0 +1,12 @@
+services:
+  mineru-api:
+    environment:
+      NVIDIA_VISIBLE_DEVICES: ${MINERU_GPU_DEVICE_IDS:-0}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["${MINERU_GPU_DEVICE_IDS:-0}"]
+              capabilities: [gpu]

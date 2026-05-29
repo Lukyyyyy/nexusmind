@@ -26,6 +26,10 @@ public class DocumentVector {
     @Lob
     private String textContent;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "content_format", length = 16, nullable = false, columnDefinition = "varchar(16) default 'PLAIN_TEXT'")
+    private DocumentContentFormat contentFormat = DocumentContentFormat.PLAIN_TEXT;
+
     @Column(length = 32)
     private String modelVersion;
     

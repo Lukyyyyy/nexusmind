@@ -2,7 +2,9 @@ package com.luky.nexusmind.consumer;
 
 import com.luky.nexusmind.config.KafkaConfig;
 import com.luky.nexusmind.model.FileProcessingTask;
+import com.luky.nexusmind.model.ProcessingStage;
 import com.luky.nexusmind.service.AiTraceService;
+import com.luky.nexusmind.service.FileProcessingStatusService;
 import com.luky.nexusmind.service.ParseService;
 import com.luky.nexusmind.service.VectorizationService;
 import io.minio.MinioClient;
@@ -25,14 +27,17 @@ public class FileProcessingConsumer {
     private final ParseService parseService;
     private final VectorizationService vectorizationService;
     private final AiTraceService aiTraceService;
+    private final FileProcessingStatusService processingStatusService;
     @Autowired
     private KafkaConfig kafkaConfig;
 
 
-    public FileProcessingConsumer(ParseService parseService, VectorizationService vectorizationService, AiTraceService aiTraceService) {
+    public FileProcessingConsumer(ParseService parseService, VectorizationService vectorizationService, AiTraceService aiTraceService,
+                                  FileProcessingStatusService processingStatusService) {
         this.parseService = parseService;
         this.vectorizationService = vectorizationService;
         this.aiTraceService = aiTraceService;
+        this.processingStatusService = processingStatusService;
     }
 
     @KafkaListener(topics = "#{kafkaConfig.getFileProcessingTopic()}", groupId = "#{kafkaConfig.getFileProcessingGroupId()}")
@@ -51,7 +56,8 @@ public class FileProcessingConsumer {
                 .attribute("messaging.system", "kafka")
                 .attribute("messaging.destination.name", kafkaConfig.getFileProcessingTopic())
                 .attribute("nexusmind.org_tag", task.getOrgTag())
-                .attribute("nexusmind.upload.is_public", task.isPublic());
+                .attribute("nexusmind.upload.is_public", task.isPublic())
+                .attribute("nexusmind.parse.requested_engine", task.getParseEngine() != null ? task.getParseEngine().name() : "AUTO");
         try {
             // 下载文件
             AiTraceService.TraceSpan downloadSpan = aiTraceService.startFileSpan(
@@ -77,18 +83,24 @@ public class FileProcessingConsumer {
             }
 
             // 解析文件
-            parseService.parseAndSave(task.getFileMd5(), fileStream, 
-                    task.getUserId(), task.getOrgTag(), task.isPublic());
+            processingStatusService.markRunning(task, ProcessingStage.PARSING, "正在解析文件");
+            int parsedChunkCount = parseService.parseAndSave(task.getFileMd5(), fileStream,
+                    task.getUserId(), task.getOrgTag(), task.isPublic(), task.getParseEngine(), task.getFileName());
+            processingStatusService.markParsed(task, parsedChunkCount);
             log.info("文件解析完成，fileMd5: {}", task.getFileMd5());
 
             // 向量化处理
-            vectorizationService.vectorize(task.getFileMd5(), 
+            processingStatusService.markRunning(task, ProcessingStage.VECTORIZING, "正在生成向量");
+            int vectorizedCount = vectorizationService.vectorize(task.getFileMd5(),
                     task.getUserId(), task.getOrgTag(), task.isPublic());
+            long esDocumentCount = vectorizedCount > 0 ? vectorizedCount : 0;
+            processingStatusService.markCompleted(task, vectorizedCount, esDocumentCount);
             log.info("向量化完成，fileMd5: {}", task.getFileMd5());
             span.attribute("nexusmind.file.processing.status", "success");
         } catch (Exception e) {
             span.error(e);
             span.attribute("nexusmind.file.processing.status", "failed");
+            processingStatusService.markFailed(task, null, e);
             log.error("Error processing task: {}", task, e);
             // 抛出异常让 Kafka 的 DefaultErrorHandler 捕获并触发重试 / 死信
             throw new RuntimeException("Error processing task", e);

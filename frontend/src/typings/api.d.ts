@@ -130,6 +130,7 @@ declare namespace Api {
       orgTag: string | null;
       orgTagName: string | null;
       isPublic: boolean;
+      parseEngine: 'AUTO' | 'TIKA' | 'MINERU';
       fileList: import('naive-ui').UploadFileInfo[];
     }
 
@@ -140,10 +141,26 @@ declare namespace Api {
       chunkIndex: number;
       totalSize: number;
       fileName: string;
+      userId?: string;
       orgTag: string | null;
       orgTagName?: string | null;
       public: boolean;
       isPublic: boolean;
+      parseEngine: 'AUTO' | 'TIKA' | 'MINERU';
+      actualParseEngine?: 'AUTO' | 'TIKA' | 'MINERU' | null;
+      processingStage?: 'QUEUED' | 'PARSING' | 'CHUNKING' | 'VECTORIZING' | 'INDEXING' | 'COMPLETED' | 'FAILED';
+      processingState?: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED';
+      processingMessage?: string | null;
+      processingError?: string | null;
+      parsedChunkCount?: number;
+      vectorizedCount?: number;
+      esDocumentCount?: number;
+      processingDurationMillis?: number | null;
+      processingStartedAt?: string | null;
+      processingUpdatedAt?: string | null;
+      processingCompletedAt?: string | null;
+      serverTime?: string | null;
+      uploaderName?: string;
       uploadedChunks: number[];
       progress: number;
       status: UploadStatus;
@@ -155,16 +172,37 @@ declare namespace Api {
 
     type Merge = Pick<UploadTask, 'fileMd5' | 'fileName'>;
 
-    interface Progress {
-      uploaded: number[];
-      progress: number;
-      totalChunks: number;
-    }
+      interface Progress {
+        uploaded: number[];
+        progress: number;
+        totalChunks: number;
+      }
 
-    interface Result {
-      objectUrl: string;
-      fileSize: number;
-    }
+      interface ProcessingStatus {
+        fileMd5: string;
+        uploadStatus: number;
+        dbChunkCount: number;
+        esDocumentCount: number;
+        processed: boolean;
+        processingStage?: UploadTask['processingStage'];
+        processingState?: UploadTask['processingState'];
+        processingMessage?: string | null;
+        processingError?: string | null;
+        parseEngine?: UploadTask['parseEngine'];
+        actualParseEngine?: UploadTask['actualParseEngine'];
+        parsedChunkCount?: number;
+        vectorizedCount?: number;
+        processingDurationMillis?: number | null;
+        processingStartedAt?: string | null;
+        processingUpdatedAt?: string | null;
+        processingCompletedAt?: string | null;
+        serverTime?: string | null;
+      }
+
+      interface Result {
+        objectUrl: string;
+        fileSize: number;
+      }
 
     interface DocumentChunk {
       fileMd5: string;
@@ -174,6 +212,8 @@ declare namespace Api {
       contentLength: number;
       byteSize: number;
       configuredChunkSize: number;
+      contentFormat?: 'PLAIN_TEXT' | 'MARKDOWN';
+      actualParseEngine?: UploadTask['actualParseEngine'];
       modelVersion?: string | null;
     }
 
@@ -181,6 +221,8 @@ declare namespace Api {
       fileMd5: string;
       fileName: string;
       configuredChunkSize: number;
+      contentFormat?: 'PLAIN_TEXT' | 'MARKDOWN';
+      actualParseEngine?: UploadTask['actualParseEngine'];
       totalChunks: number;
       page: number;
       size: number;

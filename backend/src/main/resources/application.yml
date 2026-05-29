@@ -73,6 +73,8 @@ spring:
       properties:
         spring.json.trusted.packages: "*" # 允许反序列化的包
         client.dns.lookup: use_all_dns_ips
+        max.poll.interval.ms: 1800000
+        max.poll.records: 1
     topic:
       file-processing: file-processing-topic1 # 新增的 Topic 配置
       dlt: file-processing-dlt # 死信队列主题
@@ -104,6 +106,14 @@ file:
     chunk-size: 512 # 每个文本块的最大字符数
     buffer-size: 8192    # 8KB 缓冲区
     max-memory-threshold: 0.8  # 80% 内存阈值
+    mineru:
+      base-url: ${MINERU_BASE_URL:}
+      parse-path: ${MINERU_PARSE_PATH:/file_parse}
+      parse-method: ${MINERU_PARSE_METHOD:auto}
+      ocr: ${MINERU_OCR:false}
+      enable-table: ${MINERU_ENABLE_TABLE:false}
+      enable-formula: ${MINERU_ENABLE_FORMULA:false}
+      fallback-to-tika: true
 
 elasticsearch:
   host: localhost       # Elasticsearch主机地址

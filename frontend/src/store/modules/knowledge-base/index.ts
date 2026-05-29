@@ -4,6 +4,7 @@ import { nanoid } from '~/packages/utils/src';
 const maxChunkUploadsPerFile = 3;
 
 export const useKnowledgeBaseStore = defineStore(SetupStoreId.KnowledgeBase, () => {
+  const authStore = useAuthStore();
   const tasks = ref<Api.KnowledgeBase.UploadTask[]>([]);
   const activeUploads = ref<Set<string>>(new Set());
 
@@ -54,13 +55,16 @@ export const useKnowledgeBaseStore = defineStore(SetupStoreId.KnowledgeBase, () 
       const { error } = await request({
         url: '/upload/merge',
         method: 'POST',
-        data: { fileMd5: task.fileMd5, fileName: task.fileName }
+        data: { fileMd5: task.fileMd5, fileName: task.fileName, parseEngine: task.parseEngine }
       });
       if (error) return false;
 
       // 更新任务状态为已完成
       const index = tasks.value.findIndex(t => t.fileMd5 === task.fileMd5);
       tasks.value[index].status = UploadStatus.Completed;
+      tasks.value[index].processingStage = 'QUEUED';
+      tasks.value[index].processingState = 'PENDING';
+      tasks.value[index].processingMessage = '等待处理';
       return true;
     } catch {
       return false;
@@ -106,8 +110,11 @@ export const useKnowledgeBaseStore = defineStore(SetupStoreId.KnowledgeBase, () 
       fileMd5: md5,
       fileName: file.name,
       totalSize: file.size,
+      userId: authStore.userInfo.id ? String(authStore.userInfo.id) : undefined,
+      uploaderName: authStore.userInfo.username || undefined,
       public: form.isPublic,
       isPublic: form.isPublic,
+      parseEngine: form.parseEngine,
       uploadedChunks: [],
       progress: 0,
       status: UploadStatus.Pending,

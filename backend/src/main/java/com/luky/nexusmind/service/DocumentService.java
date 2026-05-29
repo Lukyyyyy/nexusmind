@@ -2,6 +2,8 @@ package com.luky.nexusmind.service;
 
 import com.luky.nexusmind.model.FileUpload;
 import com.luky.nexusmind.model.DocumentVector;
+import com.luky.nexusmind.model.FileProcessingStatus;
+import com.luky.nexusmind.model.ParseEngine;
 import com.luky.nexusmind.model.User;
 import com.luky.nexusmind.repository.DocumentVectorRepository;
 import com.luky.nexusmind.repository.FileUploadRepository;
@@ -64,6 +66,9 @@ public class DocumentService {
     @Autowired
     private UserRepository userRepository;
 
+    @Autowired
+    private FileProcessingStatusService processingStatusService;
+
     @Value("${file.parsing.chunk-size}")
     private int configuredChunkSize;
 
@@ -120,6 +125,7 @@ public class DocumentService {
             }
             
             // 4. 删除FileUpload记录
+            processingStatusService.delete(fileMd5, userId);
             fileUploadRepository.deleteByFileMd5(fileMd5);
             logger.info("成功删除文件上传记录: {}", fileMd5);
             
@@ -234,6 +240,7 @@ public class DocumentService {
         data.put("fileMd5", file.getFileMd5());
         data.put("fileName", file.getFileName());
         data.put("configuredChunkSize", configuredChunkSize);
+        data.put("actualParseEngine", resolveActualParseEngine(fileMd5, userId));
         data.put("totalChunks", chunkPage.getTotalElements());
         data.put("page", chunkPage.getNumber());
         data.put("size", chunkPage.getSize());
@@ -254,6 +261,7 @@ public class DocumentService {
         String content = safeText(vector.getTextContent());
         Map<String, Object> data = toChunkSummary(vector);
         data.put("fileName", file.getFileName());
+        data.put("actualParseEngine", resolveActualParseEngine(fileMd5, userId));
         data.put("content", content);
         return data;
     }
@@ -266,6 +274,7 @@ public class DocumentService {
         data.put("fileMd5", file.getFileMd5());
         data.put("fileName", file.getFileName());
         data.put("configuredChunkSize", configuredChunkSize);
+        data.put("actualParseEngine", resolveActualParseEngine(fileMd5, userId));
         data.put("totalChunks", totalChunks);
         data.put("processed", file.getStatus() == 1 && totalChunks > 0);
         return data;
@@ -287,8 +296,19 @@ public class DocumentService {
         dto.put("contentLength", content.length());
         dto.put("byteSize", content.getBytes(StandardCharsets.UTF_8).length);
         dto.put("configuredChunkSize", configuredChunkSize);
+        dto.put("contentFormat", vector.getContentFormat() == null ? "PLAIN_TEXT" : vector.getContentFormat().name());
         dto.put("modelVersion", vector.getModelVersion());
         return dto;
+    }
+
+    private ParseEngine resolveActualParseEngine(String fileMd5, String userId) {
+        return processingStatusService.findByFileMd5AndUserId(fileMd5, userId)
+                .map(this::resolveActualParseEngine)
+                .orElse(null);
+    }
+
+    private ParseEngine resolveActualParseEngine(FileProcessingStatus status) {
+        return status.getActualParseEngine() != null ? status.getActualParseEngine() : status.getParseEngine();
     }
 
     private String safeText(String text) {

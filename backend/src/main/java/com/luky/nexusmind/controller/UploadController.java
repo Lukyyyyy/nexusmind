@@ -2,22 +2,29 @@ package com.luky.nexusmind.controller;
 
 import com.luky.nexusmind.config.KafkaConfig;
 import com.luky.nexusmind.model.FileProcessingTask;
+import com.luky.nexusmind.model.FileProcessingStatus;
 import com.luky.nexusmind.model.FileUpload;
+import com.luky.nexusmind.model.ParseEngine;
 import com.luky.nexusmind.repository.FileUploadRepository;
 import com.luky.nexusmind.repository.DocumentVectorRepository;
 import com.luky.nexusmind.service.ElasticsearchService;
 import com.luky.nexusmind.service.AiTraceService;
 import com.luky.nexusmind.service.FileTypeValidationService;
+import com.luky.nexusmind.service.FileProcessingStatusService;
+import com.luky.nexusmind.service.ProcessingStatusEventService;
 import com.luky.nexusmind.service.UploadService;
 import com.luky.nexusmind.service.UserService;
+import com.luky.nexusmind.utils.JwtUtils;
 import com.luky.nexusmind.utils.LogUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
 import java.util.HashMap;
@@ -56,6 +63,15 @@ public class UploadController {
 
     @Autowired
     private AiTraceService aiTraceService;
+
+    @Autowired
+    private FileProcessingStatusService processingStatusService;
+
+    @Autowired
+    private ProcessingStatusEventService processingStatusEventService;
+
+    @Autowired
+    private JwtUtils jwtUtils;
 
     public UploadController(UploadService uploadService, KafkaTemplate<String, Object> kafkaTemplate) {
         this.uploadService = uploadService;
@@ -239,6 +255,10 @@ public class UploadController {
             long dbChunkCount = documentVectorRepository.countByFileMd5(fileMd5);
             long esDocumentCount = elasticsearchService.countByFileMd5(fileMd5);
             boolean processed = uploadStatus == 1 && dbChunkCount > 0 && esDocumentCount > 0;
+            Optional<FileProcessingStatus> processingStatus = processingStatusService.findLatestByFileMd5(List.of(fileMd5), userId)
+                    .values()
+                    .stream()
+                    .findFirst();
 
             Map<String, Object> data = new HashMap<>();
             data.put("fileMd5", fileMd5);
@@ -246,6 +266,9 @@ public class UploadController {
             data.put("dbChunkCount", dbChunkCount);
             data.put("esDocumentCount", esDocumentCount);
             data.put("processed", processed);
+            processingStatus.ifPresent(status -> {
+                data.putAll(processingStatusEventService.toPayload(status));
+            });
 
             Map<String, Object> response = new HashMap<>();
             response.put("code", 200);
@@ -258,6 +281,20 @@ public class UploadController {
             errorResponse.put("message", "获取处理状态失败: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
         }
+    }
+
+    @GetMapping(value = "/status/events", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter subscribeProcessingStatusEvents(@RequestParam("token") String token) {
+        if (token == null || token.isBlank() || !jwtUtils.validateToken(token)) {
+            throw new org.springframework.web.server.ResponseStatusException(HttpStatus.UNAUTHORIZED, "未登录或登录已过期");
+        }
+
+        String userId = jwtUtils.extractUserIdFromToken(token);
+        if (userId == null || userId.isBlank()) {
+            throw new org.springframework.web.server.ResponseStatusException(HttpStatus.UNAUTHORIZED, "Token缺少用户信息");
+        }
+
+        return processingStatusEventService.subscribe(userId);
     }
 
     /**
@@ -275,8 +312,10 @@ public class UploadController {
         
         LogUtils.PerformanceMonitor monitor = LogUtils.startPerformanceMonitor("MERGE_FILE");
         String fileType = getFileType(request.fileName());
+        ParseEngine parseEngine = ParseEngine.fromNullable(request.parseEngine());
         AiTraceService.TraceSpan traceSpan = aiTraceService.startFileSpan("upload.merge_and_enqueue", userId, request.fileMd5(), request.fileName())
-                .attribute("nexusmind.file.type", fileType);
+                .attribute("nexusmind.file.type", fileType)
+                .attribute("nexusmind.parse.requested_engine", parseEngine.name());
         try {
             LogUtils.logBusiness("MERGE_FILE", userId, "接收到合并文件请求: fileMd5=%s, fileName=%s, fileType=%s", 
                     request.fileMd5(), request.fileName(), fileType);
@@ -361,9 +400,11 @@ public class UploadController {
                     request.fileName(),
                     fileUpload.getUserId(),
                     fileUpload.getOrgTag(),
-                    fileUpload.isPublic()
+                    fileUpload.isPublic(),
+                    parseEngine
             );
             task.setTraceparent(traceSpan.traceparent());
+            processingStatusService.markQueued(task);
             
             LogUtils.logBusiness("MERGE_FILE", userId, "发送文件处理任务到Kafka(事务): topic=%s, fileMd5=%s, fileName=%s", 
                     kafkaConfig.getFileProcessingTopic(), request.fileMd5(), request.fileName());
@@ -441,7 +482,7 @@ public class UploadController {
     /**
      * 合并请求的辅助类，包含文件的MD5值和文件名
      */
-    public record MergeRequest(String fileMd5, String fileName) {}
+    public record MergeRequest(String fileMd5, String fileName, String parseEngine) {}
 
     /**
      * 获取支持的文件类型列表接口
