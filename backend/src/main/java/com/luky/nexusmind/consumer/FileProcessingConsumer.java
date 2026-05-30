@@ -100,7 +100,6 @@ public class FileProcessingConsumer {
         } catch (Exception e) {
             span.error(e);
             span.attribute("nexusmind.file.processing.status", "failed");
-            processingStatusService.markFailed(task, null, e);
             log.error("Error processing task: {}", task, e);
             // 抛出异常让 Kafka 的 DefaultErrorHandler 捕获并触发重试 / 死信
             throw new RuntimeException("Error processing task", e);

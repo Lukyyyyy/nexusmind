@@ -1,6 +1,7 @@
 <script setup lang="tsx">
+import type { DropdownOption } from 'naive-ui';
 import type { UploadFileInfo } from 'naive-ui';
-import { NButton, NEllipsis, NModal, NPopconfirm, NProgress, NTag, NTooltip, NUpload } from 'naive-ui';
+import { NButton, NDropdown, NEllipsis, NModal, NProgress, NTag, NTooltip, NUpload } from 'naive-ui';
 import { uploadAccept } from '@/constants/common';
 import { fakePaginationRequest } from '@/service/request';
 import { UploadStatus } from '@/enum';
@@ -29,8 +30,8 @@ function apiFn() {
 function renderIcon(fileName: string) {
   const ext = getFileExt(fileName);
   if (ext) {
-    if (uploadAccept.split(',').includes(`.${ext}`)) return <SvgIcon localIcon={ext} class="mx-4 text-12" />;
-    return <SvgIcon localIcon="dflt" class="mx-4 text-12" />;
+    if (uploadAccept.split(',').includes(`.${ext}`)) return <SvgIcon localIcon={ext} class="text-44px" />;
+    return <SvgIcon localIcon="dflt" class="text-44px" />;
   }
   return null;
 }
@@ -54,6 +55,42 @@ function handleChunkView(row: Api.KnowledgeBase.UploadTask) {
   chunkVisible.value = true;
 }
 
+function getFileActionOptions(row: Api.KnowledgeBase.UploadTask): DropdownOption[] {
+  return [
+    {
+      label: '查看切片',
+      key: 'chunks',
+      disabled: row.status !== UploadStatus.Completed
+    },
+    {
+      label: '删除文件',
+      key: 'delete'
+    }
+  ];
+}
+
+function handleFileAction(key: string, row: Api.KnowledgeBase.UploadTask) {
+  if (key === 'chunks') {
+    handleChunkView(row);
+    return;
+  }
+
+  if (key === 'delete') confirmDelete(row);
+}
+
+function confirmDelete(row: Api.KnowledgeBase.UploadTask) {
+  window.$dialog?.warning({
+    title: '删除文件',
+    content: `确认删除“${row.fileName}”吗？`,
+    positiveText: '删除',
+    negativeText: '取消',
+    positiveButtonProps: {
+      type: 'error'
+    },
+    onPositiveClick: () => handleDelete(row.fileMd5)
+  });
+}
+
 const { columns, columnChecks, data, getData, loading } = useTable({
   apiFn,
   immediate: false,
@@ -61,76 +98,74 @@ const { columns, columnChecks, data, getData, loading } = useTable({
     {
       key: 'fileName',
       title: '文件名',
-      minWidth: 400,
+      minWidth: 460,
       render: row => (
-        <div class="flex items-center">
-          {renderIcon(row.fileName)}
-          <NEllipsis lineClamp={2} tooltip>
-            <span
-              class="cursor-pointer hover:text-primary transition-colors"
-              onClick={() => handleFilePreview(row.fileName)}
-            >
-              {row.fileName}
-            </span>
-          </NEllipsis>
+        <div class="flex items-center gap-12px py-6px">
+          <div class="h-52px w-44px shrink-0 flex-center overflow-visible">{renderIcon(row.fileName)}</div>
+          <div class="min-w-0 flex-1">
+            <NEllipsis lineClamp={2} tooltip>
+              <span
+                class="cursor-pointer text-14px text-#1f2937 transition-colors hover:text-primary"
+                onClick={() => handleFilePreview(row.fileName)}
+              >
+                {row.fileName}
+              </span>
+            </NEllipsis>
+            <div class="mt-4px flex items-center gap-8px text-12px text-#8a8f99">
+              <span>{fileSize(row.totalSize)}</span>
+              <span class="h-3px w-3px rd-full bg-#d0d5dd" />
+              <span>{formatParseEngine(row.actualParseEngine ?? row.parseEngine)}</span>
+            </div>
+          </div>
         </div>
       )
     },
     {
-      key: 'totalSize',
-      title: '文件大小',
-      width: 100,
-      render: row => fileSize(row.totalSize)
-    },
-    {
       key: 'status',
-      title: '上传状态',
-      width: 100,
-      render: row => renderStatus(row.status, row.progress)
-    },
-    {
-      key: 'processingState',
-      title: '处理状态',
-      width: 150,
-      render: row => renderProcessingStatus(row)
+      title: '状态',
+      width: 240,
+      render: row => renderPipelineStatus(row)
     },
     {
       key: 'processingDurationMillis',
-      title: '耗时',
-      width: 110,
-      render: row => formatDuration(resolveProcessingDuration(row, durationNow.value))
+      title: '处理',
+      width: 170,
+      render: row => (
+        <div class="leading-5">
+          <div class="text-14px text-#1f2937">{formatDuration(resolveProcessingDuration(row, durationNow.value))}</div>
+          <div class="mt-2px text-12px text-#8a8f99">{formatProcessingSummary(row)}</div>
+        </div>
+      )
     },
     {
       key: 'uploaderName',
-      title: '上传人',
-      width: 110,
-      ellipsis: { tooltip: true },
-      render: row => row.uploaderName || row.userId || '-'
-    },
-    {
-      key: 'orgTagName',
-      title: '组织标签',
-      width: 150,
-      ellipsis: { tooltip: true, lineClamp: 2 }
-    },
-    {
-      key: 'isPublic',
-      title: '是否公开',
-      width: 100,
-      render: row => (row.public || row.isPublic ? <NTag type="success">公开</NTag> : <NTag type="warning">私有</NTag>)
+      title: '归属',
+      width: 230,
+      render: row => (
+        <div class="leading-5">
+          <div class="text-14px text-#1f2937">{row.uploaderName || row.userId || '-'}</div>
+          <div class="mt-2px flex items-center gap-6px text-12px text-#8a8f99">
+            <NEllipsis tooltip style={{ maxWidth: '120px' }}>
+              {row.orgTagName || '默认组织'}
+            </NEllipsis>
+            {row.public || row.isPublic ? <NTag size="small" type="success">公开</NTag> : <NTag size="small" type="warning">私有</NTag>}
+          </div>
+        </div>
+      )
     },
     {
       key: 'createdAt',
       title: '上传时间',
-      width: 100,
-      render: row => dayjs(row.createdAt).format('YYYY-MM-DD')
+      width: 170,
+      render: row => dayjs(row.createdAt).format('YYYY-MM-DD HH:mm:ss')
     },
     {
       key: 'operate',
       title: '操作',
-      width: 240,
+      fixed: 'right',
+      width: 170,
       render: row => (
-        <div class="flex gap-4">
+        <div class="flex flex-nowrap items-center gap-8px">
           {renderResumeUploadButton(row)}
           <NButton
             type="primary"
@@ -140,25 +175,15 @@ const { columns, columnChecks, data, getData, loading } = useTable({
           >
             预览
           </NButton>
-          <NButton
-            type="info"
-            ghost
-            size="small"
-            disabled={row.status !== UploadStatus.Completed}
-            onClick={() => handleChunkView(row)}
+          <NDropdown
+            trigger="click"
+            options={getFileActionOptions(row)}
+            onSelect={key => handleFileAction(String(key), row)}
           >
-            切片
-          </NButton>
-          <NPopconfirm onPositiveClick={() => handleDelete(row.fileMd5)}>
-            {{
-              default: () => '确认删除当前文件吗？',
-              trigger: () => (
-                <NButton type="error" ghost size="small">
-                  删除
-                </NButton>
-              )
-            }}
-          </NPopconfirm>
+            <NButton size="small" quaternary>
+              更多
+            </NButton>
+          </NDropdown>
         </div>
       )
     }
@@ -254,33 +279,81 @@ function handleSearch() {
 }
 // #endregion
 
-// 渲染上传状态
-function renderStatus(status: UploadStatus, percentage: number) {
-  if (status === UploadStatus.Completed) return <NTag type="success">已完成</NTag>;
-  else if (status === UploadStatus.Break) return <NTag type="error">上传中断</NTag>;
-  return <NProgress percentage={percentage} processing />;
-}
+function renderPipelineStatus(row: Api.KnowledgeBase.UploadTask) {
+  if (row.status === UploadStatus.Break) return <NTag type="error">上传中断</NTag>;
 
-function renderProcessingStatus(row: Api.KnowledgeBase.UploadTask) {
-  if (!row.processingStage) {
-    if (row.status === UploadStatus.Completed) return <NTag type="info">处理中</NTag>;
-    return <NTag>未开始</NTag>;
-  }
-
-  const stageText = processingStageText(row.processingStage);
   if (row.processingState === 'FAILED') {
+    const stageText = processingFailureText(row.processingStage);
     return (
       <NTooltip>
         {{
-          trigger: () => <NTag type="error">{stageText}失败</NTag>,
+          trigger: () => <NTag type="error">{stageText}</NTag>,
           default: () => row.processingError || row.processingMessage || '处理失败'
         }}
       </NTooltip>
     );
   }
+
   if (row.processingState === 'SUCCEEDED') return <NTag type="success">已入库</NTag>;
-  if (row.processingState === 'RUNNING' || row.processingState === 'PENDING') return <NTag type="info">处理中</NTag>;
-  return <NTag type="info">处理中</NTag>;
+
+  if (row.status !== UploadStatus.Completed) {
+    return renderStatusProgress('上传中', normalizePercentage(row.progress));
+  }
+
+  return renderStatusProgress(processingStageActionText(row.processingStage), processingStageProgress(row.processingStage));
+}
+
+function renderStatusProgress(label: string, percentage: number) {
+  return (
+    <div class="max-w-180px">
+      <div class="mb-4px text-12px text-#5f6673">{label}</div>
+      <NProgress type="line" percentage={percentage} processing height={8} indicatorPlacement="inside" />
+    </div>
+  );
+}
+
+function normalizePercentage(value?: number | null) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function processingStageProgress(stage: Api.KnowledgeBase.UploadTask['processingStage']) {
+  const record: Record<string, number> = {
+    QUEUED: 10,
+    PARSING: 35,
+    CHUNKING: 55,
+    VECTORIZING: 75,
+    INDEXING: 90,
+    COMPLETED: 98,
+    FAILED: 100
+  };
+  return stage ? record[stage] || 20 : 8;
+}
+
+function processingStageActionText(stage: Api.KnowledgeBase.UploadTask['processingStage']) {
+  const record: Record<string, string> = {
+    QUEUED: '等待解析',
+    PARSING: '解析中',
+    CHUNKING: '切片中',
+    VECTORIZING: '向量化中',
+    INDEXING: '入库中',
+    COMPLETED: '入库中',
+    FAILED: '处理失败'
+  };
+  return stage ? record[stage] || '处理中' : '解析中';
+}
+
+function processingFailureText(stage: Api.KnowledgeBase.UploadTask['processingStage']) {
+  const record: Record<string, string> = {
+    QUEUED: '等待处理失败',
+    PARSING: '解析失败',
+    CHUNKING: '切片失败',
+    VECTORIZING: '向量化失败',
+    INDEXING: '入库失败',
+    COMPLETED: '入库失败',
+    FAILED: '处理失败'
+  };
+  return stage ? record[stage] || '处理失败' : '处理失败';
 }
 
 function processingStageText(stage: Api.KnowledgeBase.UploadTask['processingStage']) {
@@ -411,6 +484,22 @@ function formatDuration(milliseconds?: number | null) {
   return parts.join('');
 }
 
+function formatParseEngine(engine?: Api.KnowledgeBase.UploadTask['actualParseEngine'] | Api.KnowledgeBase.UploadTask['parseEngine']) {
+  const record: Record<string, string> = {
+    AUTO: '自动解析',
+    TIKA: 'Tika',
+    MINERU: 'MinerU'
+  };
+  return engine ? record[engine] || engine : '自动解析';
+}
+
+function formatProcessingSummary(row: Api.KnowledgeBase.UploadTask) {
+  if (typeof row.parsedChunkCount === 'number') return `${row.parsedChunkCount} 个切片`;
+  if (typeof row.vectorizedCount === 'number') return `${row.vectorizedCount} 个向量`;
+  if (typeof row.esDocumentCount === 'number') return `${row.esDocumentCount} 条索引`;
+  return processingStageText(row.processingStage);
+}
+
 // #region 文件续传
 function renderResumeUploadButton(row: Api.KnowledgeBase.UploadTask) {
   if (row.status === UploadStatus.Break) {
@@ -492,7 +581,7 @@ async function onBeforeUpload(
         :data="tasks"
         size="small"
         :flex-height="!appStore.isMobile"
-        :scroll-x="1450"
+        :scroll-x="1440"
         :loading="loading"
         remote
         :row-key="row => row.id"

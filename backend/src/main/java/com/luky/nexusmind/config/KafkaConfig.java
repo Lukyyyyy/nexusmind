@@ -1,5 +1,7 @@
 package com.luky.nexusmind.config;
 
+import com.luky.nexusmind.model.FileProcessingTask;
+import com.luky.nexusmind.service.FileProcessingStatusService;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.StringDeserializer;
@@ -101,11 +103,17 @@ public class KafkaConfig {
     @Bean
     public ConcurrentKafkaListenerContainerFactory<String, Object> kafkaListenerContainerFactory(
             ConsumerFactory<String, Object> consumerFactory,
-            KafkaTemplate<String, Object> kafkaTemplate) {
+            KafkaTemplate<String, Object> kafkaTemplate,
+            FileProcessingStatusService processingStatusService) {
         // 当重试失败后，消息发送至 file-processing-dlt 主题，分区与原消息保持一致
         DeadLetterPublishingRecoverer recoverer = new DeadLetterPublishingRecoverer(
                 kafkaTemplate,
-                (record, ex) -> new TopicPartition(fileProcessingDltTopic, record.partition()));
+                (record, ex) -> {
+                    if (record.value() instanceof FileProcessingTask task) {
+                        processingStatusService.markFailed(task, null, ex);
+                    }
+                    return new TopicPartition(fileProcessingDltTopic, record.partition());
+                });
 
         // 固定退避策略：每 3 秒重试一次，最多重试 4 次（加首次共 5 次）
         DefaultErrorHandler errorHandler = new DefaultErrorHandler(recoverer, new FixedBackOff(3000L, 4));

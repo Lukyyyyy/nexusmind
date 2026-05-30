@@ -57,19 +57,23 @@ public class FileProcessingStatusService {
     }
 
     private void applyRunning(FileProcessingStatus status, ProcessingStage stage, String message) {
-        status.setCurrentStage(stage);
+        if (shouldAdvanceStage(status.getCurrentStage(), stage)) {
+            status.setCurrentStage(stage);
+            status.setMessage(message);
+        }
         status.setState(ProcessingState.RUNNING);
-        status.setMessage(message);
         status.setErrorMessage(null);
     }
 
     @Transactional
     public void markParsed(FileProcessingTask task, int chunkCount) {
         FileProcessingStatus status = getOrCreate(task);
-        status.setCurrentStage(ProcessingStage.CHUNKING);
+        if (shouldAdvanceStage(status.getCurrentStage(), ProcessingStage.CHUNKING)) {
+            status.setCurrentStage(ProcessingStage.CHUNKING);
+            status.setMessage("解析和切片完成");
+        }
         status.setState(ProcessingState.RUNNING);
         status.setParsedChunkCount(chunkCount);
-        status.setMessage("解析和切片完成");
         status.setErrorMessage(null);
         saveAndPublish(status);
     }
@@ -102,6 +106,7 @@ public class FileProcessingStatusService {
         status.setState(ProcessingState.FAILED);
         status.setMessage("处理失败");
         status.setErrorMessage(truncate(exception.getMessage(), 2000));
+        status.setCompletedAt(LocalDateTime.now());
         saveAndPublish(status);
     }
 
@@ -140,9 +145,31 @@ public class FileProcessingStatusService {
     }
 
     private FileProcessingStatus saveAndPublish(FileProcessingStatus status) {
-        FileProcessingStatus saved = repository.save(status);
+        FileProcessingStatus saved = repository.saveAndFlush(status);
         eventService.publish(saved);
         return saved;
+    }
+
+    private boolean shouldAdvanceStage(ProcessingStage currentStage, ProcessingStage nextStage) {
+        if (nextStage == null) {
+            return false;
+        }
+        if (currentStage == null) {
+            return true;
+        }
+        return stageOrder(nextStage) >= stageOrder(currentStage);
+    }
+
+    private int stageOrder(ProcessingStage stage) {
+        return switch (stage) {
+            case QUEUED -> 0;
+            case PARSING -> 1;
+            case CHUNKING -> 2;
+            case VECTORIZING -> 3;
+            case INDEXING -> 4;
+            case COMPLETED -> 5;
+            case FAILED -> 6;
+        };
     }
 
     private String truncate(String message, int maxLength) {
