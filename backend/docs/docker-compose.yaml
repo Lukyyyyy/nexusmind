@@ -12,7 +12,6 @@ services:
       MYSQL_DATABASE: nexusmind
     volumes:
       - mysql-data:/var/lib/mysql
-      - /data/docker/mysql/conf:/etc/mysql/conf.d
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci --explicit_defaults_for_timestamp=true --lower_case_table_names=1
     healthcheck:
       start_period: 5s
@@ -29,7 +28,6 @@ services:
       - "${MINIO_CONSOLE_HOST_PORT:-19001}:19001"
     volumes:
       - minio-data:/data
-      - /data/docker/minio/config:/root/.minio
     environment:
       MINIO_ROOT_USER: admin
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-nexusmind-local}
@@ -43,7 +41,6 @@ services:
       - "${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - redis-data:/data
-      - /data/docker/redis:/logs
     healthcheck:
       start_period: 5s
       test: ["CMD", "redis-cli", "ping"]
