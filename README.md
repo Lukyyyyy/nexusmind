@@ -72,38 +72,38 @@ frontend/
 首次使用时复制环境变量模板：
 
 ```bash
-copy .env.example .env.local
+cp .env.example .env.local
 ```
 
 按需填写 `.env.local` 中的 `DEEPSEEK_API_KEY` 和 `EMBEDDING_API_KEY`。不填写时项目仍可启动，但 AI 问答和文档向量化不可用。
 
 一键启动开发环境：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\start-dev.ps1
+```bash
+./scripts/start-dev.sh
 ```
 
-该脚本会启动 Docker 中间件，并分别打开后端和前端窗口。
+该脚本会启动 Docker 中间件，并同时启动后端和前端。
 
 只启动中间件：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\start-infra.ps1
+```bash
+./scripts/start-infra.sh
 ```
 
 只启动后端：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\start-backend.ps1
+```bash
+./scripts/start-backend.sh
 ```
 
 只启动前端：
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\start-frontend.ps1
+```bash
+./scripts/start-frontend.sh
 ```
 
-后端默认端口为 `8081`，前端测试环境默认请求 `http://localhost:8081/api/v1`。
+后端默认端口为 `18081`，前端测试环境默认请求 `http://localhost:18081/api/v1`。
 
 ## 配置说明
 
