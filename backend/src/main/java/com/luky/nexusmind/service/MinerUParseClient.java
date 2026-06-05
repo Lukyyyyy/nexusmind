@@ -11,6 +11,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.util.LinkedMultiValueMap;
 import org.springframework.util.MultiValueMap;
+import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestTemplate;
 
 import java.io.IOException;
@@ -31,6 +32,9 @@ public class MinerUParseClient {
 
     @Value("${file.parsing.mineru.parse-method:auto}")
     private String parseMethod;
+
+    @Value("${file.parsing.mineru.backend:hybrid-auto-engine}")
+    private String parseBackend;
 
     @Value("${file.parsing.mineru.ocr:false}")
     private boolean ocr;
@@ -55,7 +59,7 @@ public class MinerUParseClient {
 
         MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
         body.add("files", new NamedByteArrayResource(fileBytes, fileName));
-        body.add("backend", "pipeline");
+        body.add("backend", resolveBackend());
         body.add("parse_method", resolveParseMethod());
         body.add("lang_list", "ch");
         body.add("formula_enable", String.valueOf(enableFormula));
@@ -63,17 +67,29 @@ public class MinerUParseClient {
         body.add("return_md", "true");
         body.add("response_format_zip", "false");
 
-        ResponseEntity<String> response = restTemplate.postForEntity(
-                normalizeBaseUrl() + parsePath,
-                new HttpEntity<>(body, headers),
-                String.class
-        );
+        ResponseEntity<String> response;
+        try {
+            response = restTemplate.postForEntity(
+                    normalizeBaseUrl() + parsePath,
+                    new HttpEntity<>(body, headers),
+                    String.class
+            );
+        } catch (HttpStatusCodeException e) {
+            throw new IOException("MinerU parse service returned " + e.getStatusCode() + formatErrorBody(e.getResponseBodyAsString()), e);
+        }
 
         if (!response.getStatusCode().is2xxSuccessful() || response.getBody() == null) {
             throw new IOException("MinerU parse service returned " + response.getStatusCode());
         }
 
         return extractText(response.getBody());
+    }
+
+    private String resolveBackend() {
+        if (parseBackend != null && !parseBackend.isBlank()) {
+            return parseBackend.trim();
+        }
+        return "hybrid-auto-engine";
     }
 
     private String resolveParseMethod() {
@@ -85,6 +101,17 @@ public class MinerUParseClient {
 
     private String normalizeBaseUrl() {
         return baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl;
+    }
+
+    private String formatErrorBody(String responseBody) {
+        if (responseBody == null || responseBody.isBlank()) {
+            return "";
+        }
+        String normalized = responseBody.replaceAll("\\s+", " ").trim();
+        if (normalized.length() > 1000) {
+            normalized = normalized.substring(0, 1000) + "...";
+        }
+        return ": " + normalized;
     }
 
     private String extractText(String responseBody) throws IOException {

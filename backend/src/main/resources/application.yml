@@ -109,6 +109,7 @@ file:
     mineru:
       base-url: ${MINERU_BASE_URL:}
       parse-path: ${MINERU_PARSE_PATH:/file_parse}
+      backend: ${MINERU_BACKEND:hybrid-auto-engine}
       parse-method: ${MINERU_PARSE_METHOD:auto}
       ocr: ${MINERU_OCR:false}
       enable-table: ${MINERU_ENABLE_TABLE:false}

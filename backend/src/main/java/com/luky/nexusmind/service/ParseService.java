@@ -182,18 +182,35 @@ public class ParseService {
                     ? ParseEngine.MINERU
                     : ParseEngine.TIKA;
         }
+        if (engine == ParseEngine.MINERU && !isMinerUSupportedFile(fileName)) {
+            logger.warn("文件类型不支持MinerU解析，将使用Tika，fileName: {}", fileName);
+            return ParseEngine.TIKA;
+        }
         return engine;
     }
 
     private boolean shouldUseMinerUByDefault(String fileName) {
+        String extension = getFileExtension(fileName);
+        return "pdf".equalsIgnoreCase(extension);
+    }
+
+    private boolean isMinerUSupportedFile(String fileName) {
+        String extension = getFileExtension(fileName);
+        return switch (extension) {
+            case "pdf", "png", "jpg", "jpeg", "bmp", "tif", "tiff", "webp", "docx", "pptx", "xlsx" -> true;
+            default -> false;
+        };
+    }
+
+    private String getFileExtension(String fileName) {
         if (fileName == null) {
-            return false;
+            return "";
         }
         int dotIndex = fileName.lastIndexOf('.');
         if (dotIndex < 0 || dotIndex == fileName.length() - 1) {
-            return false;
+            return "";
         }
-        return "pdf".equalsIgnoreCase(fileName.substring(dotIndex + 1));
+        return fileName.substring(dotIndex + 1).toLowerCase();
     }
 
     /**

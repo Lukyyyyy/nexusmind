@@ -39,11 +39,19 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/lib/env.sh" "$ROOT"
 
 if [[ "$NO_INFRA" != true ]]; then
-  "$ROOT/scripts/start-infra.sh" "${MINERU_ARGS[@]}"
+  if [[ ${#MINERU_ARGS[@]} -gt 0 ]]; then
+    "$ROOT/scripts/start-infra.sh" "${MINERU_ARGS[@]}"
+  else
+    "$ROOT/scripts/start-infra.sh"
+  fi
 fi
 
 cleanup() {
-  jobs -p | xargs -r kill 2>/dev/null || true
+  local pids
+  pids="$(jobs -p)"
+  if [[ -n "$pids" ]]; then
+    kill $pids 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT INT TERM
 
