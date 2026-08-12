@@ -2,19 +2,42 @@ package com.luky.nexusmind.controller;
 
 import com.luky.nexusmind.exception.CustomException;
 import com.luky.nexusmind.service.KnowledgeGraphService;
+import com.luky.nexusmind.service.OrganizationKnowledgeGraphService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/v1/knowledge-graph")
 public class KnowledgeGraphController {
     private final KnowledgeGraphService graphService;
+    private final OrganizationKnowledgeGraphService organizationGraphService;
 
-    public KnowledgeGraphController(KnowledgeGraphService graphService) {
+    public KnowledgeGraphController(KnowledgeGraphService graphService,
+                                    OrganizationKnowledgeGraphService organizationGraphService) {
         this.graphService = graphService;
+        this.organizationGraphService = organizationGraphService;
+    }
+
+    @GetMapping("/organizations")
+    public ResponseEntity<?> organizations(@RequestAttribute("userId") String userId,
+                                           @RequestAttribute("role") String role) {
+        return ok(organizationGraphService.listOrganizations(userId, role));
+    }
+
+    @GetMapping("/organizations/{orgTag}")
+    public ResponseEntity<?> organizationGraph(@PathVariable String orgTag,
+                                               @RequestAttribute("userId") String userId,
+                                               @RequestAttribute("role") String role,
+                                               @RequestParam(required = false) String query,
+                                               @RequestParam(required = false) String entityType,
+                                               @RequestParam(required = false) List<Long> fileIds,
+                                               @RequestParam(required = false) Integer limit) {
+        return ok(organizationGraphService.getOrganizationGraph(
+                orgTag, userId, role, query, entityType, fileIds, limit));
     }
 
     @GetMapping("/documents/{fileMd5}")

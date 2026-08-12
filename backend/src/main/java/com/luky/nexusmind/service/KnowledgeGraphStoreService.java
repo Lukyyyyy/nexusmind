@@ -127,6 +127,63 @@ public class KnowledgeGraphStoreService {
         }
     }
 
+    public List<OrganizationRelation> loadOrganizationRelations(String orgTag,
+                                                                 Collection<Long> accessibleFileIds,
+                                                                 String query,
+                                                                 String entityType,
+                                                                 int limit) {
+        Driver driver = driverProvider.getIfAvailable();
+        if (driver == null || accessibleFileIds == null || accessibleFileIds.isEmpty()) return List.of();
+        List<Long> ids = accessibleFileIds.stream().filter(Objects::nonNull).distinct().toList();
+        String normalizedQuery = Objects.toString(query, "").trim();
+        String normalizedEntityType = Objects.toString(entityType, "").trim().toUpperCase(Locale.ROOT);
+        int safeLimit = Math.min(Math.max(limit, 1), 1001);
+        try (Session session = driver.session()) {
+            return session.executeRead(tx -> tx.run("""
+                    MATCH (s:Entity)-[r:RELATED]->(o:Entity)
+                    WHERE r.scopeId = $scopeId
+                      AND r.fileUploadId IN $fileIds
+                      AND ($query = '' OR toLower(s.name) CONTAINS toLower($query)
+                           OR toLower(o.name) CONTAINS toLower($query)
+                           OR toLower(r.predicate) CONTAINS toLower($query)
+                           OR toLower(coalesce(r.evidence, '')) CONTAINS toLower($query))
+                      AND ($entityType = '' OR s.type = $entityType OR o.type = $entityType)
+                    RETURN s.key AS sourceKey, s.name AS sourceName, s.type AS sourceType,
+                           o.key AS targetKey, o.name AS targetName, o.type AS targetType,
+                           r.candidateId AS candidateId, r.predicate AS predicate,
+                           r.fileUploadId AS fileUploadId, r.fileMd5 AS fileMd5,
+                           r.fileName AS fileName, r.chunkId AS chunkId,
+                           r.evidence AS evidence, r.confidence AS confidence
+                    ORDER BY r.confidence DESC, r.candidateId ASC
+                    LIMIT $limit
+                    """, Values.parameters(
+                            "scopeId", "ORG:" + Objects.toString(orgTag, "default"),
+                            "fileIds", ids,
+                            "query", normalizedQuery,
+                            "entityType", normalizedEntityType,
+                            "limit", safeLimit
+                    )).list(record -> new OrganizationRelation(
+                            record.get("sourceKey").asString(),
+                            record.get("sourceName").asString(),
+                            record.get("sourceType").asString(),
+                            record.get("targetKey").asString(),
+                            record.get("targetName").asString(),
+                            record.get("targetType").asString(),
+                            record.get("candidateId").asLong(),
+                            record.get("predicate").asString(),
+                            record.get("fileUploadId").asLong(),
+                            record.get("fileMd5").asString(""),
+                            record.get("fileName").asString(""),
+                            record.get("chunkId").isNull() ? null : record.get("chunkId").asInt(),
+                            record.get("evidence").asString(""),
+                            record.get("confidence").isNull() ? 0.0 : record.get("confidence").asDouble()
+                    )));
+        } catch (RuntimeException e) {
+            logger.warn("组织图谱查询不可用，orgTag={}: {}", orgTag, e.getMessage());
+            return List.of();
+        }
+    }
+
     public void ensureConstraints() {
         Driver driver = driverProvider.getIfAvailable();
         if (driver == null) return;
@@ -162,4 +219,10 @@ public class KnowledgeGraphStoreService {
     }
 
     public record GraphPath(List<Map<String, Object>> nodes, List<Map<String, Object>> relations) {}
+
+    public record OrganizationRelation(String sourceKey, String sourceName, String sourceType,
+                                       String targetKey, String targetName, String targetType,
+                                       Long candidateId, String predicate, Long fileUploadId,
+                                       String fileMd5, String fileName, Integer chunkId,
+                                       String evidence, Double confidence) {}
 }

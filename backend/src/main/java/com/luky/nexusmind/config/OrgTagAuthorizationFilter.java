@@ -67,6 +67,7 @@ public class OrgTagAuthorizationFilter extends OncePerRequestFilter {
                 path.matches(".*/documents/accessible.*") ||
                 path.matches(".*/documents/[a-fA-F0-9]{32}/chunks.*") ||
                 path.matches(".*/knowledge-graph/documents/.*") ||
+                path.matches(".*/knowledge-graph/organizations.*") ||
                 path.matches(".*/search/hybrid.*") ||
                 (path.matches(".*/documents/[a-fA-F0-9]{32}.*") && "DELETE".equals(request.getMethod()))) {
                 
@@ -87,6 +88,8 @@ public class OrgTagAuthorizationFilter extends OncePerRequestFilter {
                     operation = "查看文档切片";
                 } else if (path.contains("/knowledge-graph/documents/")) {
                     operation = "知识图谱操作";
+                } else if (path.contains("/knowledge-graph/organizations")) {
+                    operation = "组织知识图谱查询";
                 } else if (path.contains("/search/hybrid")) {
                     operation = "混合检索";
                 } else if ("DELETE".equals(request.getMethod()) && path.matches(".*/documents/[a-fA-F0-9]{32}.*")) {

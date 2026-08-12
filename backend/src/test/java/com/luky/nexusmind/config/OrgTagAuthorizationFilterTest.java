@@ -48,4 +48,39 @@ class OrgTagAuthorizationFilterTest {
         assertEquals("default", request.getAttribute("orgTags"));
         assertTrue(continued.get());
     }
+
+    @Test
+    void organizationGraphRequestsReceiveIdentityAttributes() throws Exception {
+        JwtUtils jwtUtils = new JwtUtils() {
+            @Override
+            public String extractUserIdFromToken(String token) {
+                return "42";
+            }
+
+            @Override
+            public String extractRoleFromToken(String token) {
+                return "USER";
+            }
+
+            @Override
+            public String extractOrgTagsFromToken(String token) {
+                return "研发部";
+            }
+        };
+
+        OrgTagAuthorizationFilter filter = new OrgTagAuthorizationFilter();
+        ReflectionTestUtils.setField(filter, "jwtUtils", jwtUtils);
+        MockHttpServletRequest request = new MockHttpServletRequest(
+                "GET", "/api/v1/knowledge-graph/organizations/%E7%A0%94%E5%8F%91%E9%83%A8");
+        request.addHeader("Authorization", "Bearer token");
+        MockHttpServletResponse response = new MockHttpServletResponse();
+        AtomicBoolean continued = new AtomicBoolean();
+
+        filter.doFilterInternal(request, response, (filteredRequest, filteredResponse) -> continued.set(true));
+
+        assertEquals("42", request.getAttribute("userId"));
+        assertEquals("USER", request.getAttribute("role"));
+        assertEquals("研发部", request.getAttribute("orgTags"));
+        assertTrue(continued.get());
+    }
 }
