@@ -104,7 +104,7 @@ export const generatedRoutes: GeneratedRoute[] = [
       title: 'model-config',
       i18nKey: 'route.model-config',
       icon: 'solar:settings-minimalistic-line-duotone',
-      order: 6
+      order: 7
     }
   },
   {
@@ -115,7 +115,7 @@ export const generatedRoutes: GeneratedRoute[] = [
       title: 'observability',
       i18nKey: 'route.observability',
       icon: 'solar:chart-2-line-duotone',
-      order: 7
+      order: 8
     }
   },
   {
@@ -127,6 +127,17 @@ export const generatedRoutes: GeneratedRoute[] = [
       i18nKey: 'route.org-tag',
       icon: 'solar:tag-line-duotone',
       roles: ['ADMIN'],
+      order: 5
+    }
+  },
+  {
+    name: 'organization-graph',
+    path: '/organization-graph',
+    component: 'layout.base$view.organization-graph',
+    meta: {
+      title: 'organization-graph',
+      i18nKey: 'route.organization-graph',
+      icon: 'solar:share-circle-line-duotone',
       order: 4
     }
   },
@@ -138,7 +149,7 @@ export const generatedRoutes: GeneratedRoute[] = [
       title: 'personal-center',
       i18nKey: 'route.personal-center',
       icon: 'solar:people-nearby-line-duotone',
-      order: 8
+      order: 9
     }
   },
   {
@@ -150,7 +161,7 @@ export const generatedRoutes: GeneratedRoute[] = [
       i18nKey: 'route.user',
       icon: 'solar:user-line-duotone',
       roles: ['ADMIN'],
-      order: 5
+      order: 6
     }
   }
 ];

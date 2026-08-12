@@ -35,3 +35,19 @@ export function rebuildDocumentGraph(fileMd5: string) {
     method: 'post'
   });
 }
+
+export function fetchOrganizationGraphOptions() {
+  return request<Api.KnowledgeGraph.OrganizationOption[]>({
+    url: '/knowledge-graph/organizations'
+  });
+}
+
+export function fetchOrganizationGraph(
+  orgTag: string,
+  params?: Api.KnowledgeGraph.OrganizationGraphQuery
+) {
+  return request<Api.KnowledgeGraph.OrganizationGraph>({
+    url: `/knowledge-graph/organizations/${encodeURIComponent(orgTag)}`,
+    params
+  });
+}

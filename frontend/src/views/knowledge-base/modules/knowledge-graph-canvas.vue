@@ -5,9 +5,18 @@ import SvgIcon from '@/components/custom/svg-icon.vue';
 
 defineOptions({ name: 'KnowledgeGraphCanvas' });
 
-const props = defineProps<{
-  nodes: Api.KnowledgeGraph.GraphNode[];
-  edges: Api.KnowledgeGraph.GraphEdge[];
+const props = withDefaults(
+  defineProps<{
+    nodes: Api.KnowledgeGraph.GraphNode[];
+    edges: Api.KnowledgeGraph.GraphEdge[];
+    showInspector?: boolean;
+  }>(),
+  { showInspector: true }
+);
+const emit = defineEmits<{
+  nodeSelect: [node: Api.KnowledgeGraph.GraphNode];
+  edgeSelect: [edge: Api.KnowledgeGraph.GraphEdge];
+  selectionClear: [];
 }>();
 
 const themeStore = useThemeStore();
@@ -22,16 +31,24 @@ let graph: Graph | null = null;
 
 const typeColors: Record<string, string> = {
   PERSON: '#8b6fb3',
+  人员: '#5558c9',
+  人物: '#5558c9',
   ORGANIZATION: '#5875a8',
+  组织: '#245bdb',
+  机构: '#245bdb',
   SYSTEM: '#438899',
   SERVICE: '#4d917d',
   METHOD: '#b97a58',
   MODEL: '#a96d86',
   DATASET: '#6f9565',
+  数据: '#6f9565',
   EVENT: '#b96868',
   LOCATION: '#6d7eaa',
+  地点: '#6d7eaa',
   CONCEPT: '#7669ad',
   TECHNOLOGY: '#647b8f',
+  项目: '#2787bd',
+  文档: '#2787bd',
   OTHER: '#7b8794'
 };
 
@@ -263,6 +280,8 @@ async function selectEdge(edgeId: string) {
   selectedEdgeId.value = edgeId;
   selectedNodeId.value = null;
   await graph?.setElementState(edgeId, ['selected'], true);
+  const edge = props.edges.find(item => item.id === edgeId);
+  if (edge) emit('edgeSelect', edge);
 }
 
 async function selectNode(nodeId: string) {
@@ -270,6 +289,8 @@ async function selectNode(nodeId: string) {
   selectedNodeId.value = nodeId;
   selectedEdgeId.value = null;
   await graph?.setElementState(nodeId, ['selected'], true);
+  const node = props.nodes.find(item => item.id === nodeId);
+  if (node) emit('nodeSelect', node);
 }
 
 async function resetElementStates() {
@@ -285,6 +306,7 @@ async function clearSelection() {
   await resetElementStates();
   selectedEdgeId.value = null;
   selectedNodeId.value = null;
+  emit('selectionClear');
 }
 
 async function toggleFullscreen() {
@@ -348,7 +370,7 @@ onBeforeUnmount(() => graph?.destroy());
     </div>
     <div v-else class="graph-content">
       <div ref="containerRef" class="graph-canvas" />
-      <aside v-if="selectedEdge || selectedNode" class="graph-inspector">
+      <aside v-if="showInspector && (selectedEdge || selectedNode)" class="graph-inspector">
         <template v-if="selectedEdge">
           <NTag size="small" type="info">关系</NTag>
           <h3>{{ selectedEdge.predicate }}</h3>

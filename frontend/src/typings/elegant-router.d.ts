@@ -28,6 +28,7 @@ declare module "@elegant-router/types" {
     "model-config": "/model-config";
     "observability": "/observability";
     "org-tag": "/org-tag";
+    "organization-graph": "/organization-graph";
     "personal-center": "/personal-center";
     "user": "/user";
   };
@@ -72,6 +73,7 @@ declare module "@elegant-router/types" {
     | "model-config"
     | "observability"
     | "org-tag"
+    | "organization-graph"
     | "personal-center"
     | "user"
   >;
@@ -101,6 +103,7 @@ declare module "@elegant-router/types" {
     | "model-config"
     | "observability"
     | "org-tag"
+    | "organization-graph"
     | "personal-center"
     | "user"
   >;

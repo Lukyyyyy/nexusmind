@@ -452,6 +452,57 @@ declare namespace Api {
       objectName?: string;
       objectType?: string;
     }
+
+    interface OrganizationOption {
+      tagId: string;
+      name: string;
+      documentCount: number;
+      publishedDocumentCount: number;
+    }
+
+    interface OrganizationGraphQuery {
+      query?: string;
+      entityType?: string;
+      fileIds?: number[];
+      limit?: number;
+    }
+
+    interface OrganizationGraph {
+      orgTag: string;
+      orgName: string;
+      nodes: GraphNode[];
+      edges: OrganizationGraphEdge[];
+      entityTypes: string[];
+      documents: OrganizationDocument[];
+      stats: OrganizationGraphStats;
+      truncated: boolean;
+      neo4jEnabled: boolean;
+    }
+
+    interface OrganizationGraphEdge {
+      id: string;
+      source: string;
+      target: string;
+      predicate: string;
+      confidence: number;
+      evidenceChunkId: number;
+      evidenceText: string;
+      fileUploadId: number;
+      fileMd5: string;
+      fileName: string;
+    }
+
+    interface OrganizationDocument {
+      id: number;
+      fileMd5: string;
+      fileName: string;
+    }
+
+    interface OrganizationGraphStats {
+      entityCount: number;
+      relationCount: number;
+      documentCount: number;
+    }
   }
 
   namespace Chat {
