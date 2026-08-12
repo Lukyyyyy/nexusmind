@@ -112,7 +112,8 @@ const bgColor = computed(() => {
   padding: 74px 64px 48px;
   background:
     radial-gradient(circle at 15% 18%, rgb(255 255 255 / 30%) 0 3px, transparent 4px),
-    linear-gradient(145deg, #334155, #51647d);
+    radial-gradient(circle at 82% 16%, rgb(91 142 255 / 30%), transparent 34%),
+    linear-gradient(145deg, #0a1f44, #174ea6);
   color: #fff;
 }
 
@@ -146,9 +147,7 @@ const bgColor = computed(() => {
   height: 42px;
   align-items: center;
   justify-content: center;
-  border-radius: 50%;
-  background: #ff6a00;
-  color: #fff;
+  color: #cbdcff;
 }
 
 .brand-copy h1 {
@@ -227,7 +226,7 @@ const bgColor = computed(() => {
   border: 0;
   padding: 0;
   background: transparent;
-  color: #0f6b95;
+  color: #245bdb;
   cursor: pointer;
   font-size: 13px;
   font-weight: 500;
@@ -235,7 +234,7 @@ const bgColor = computed(() => {
 }
 
 .account-link:hover {
-  color: #0a5c82;
+  color: #1e4fc2;
   text-decoration: underline;
 }
 
@@ -248,14 +247,14 @@ const bgColor = computed(() => {
 }
 
 :deep(.n-button--primary-type) {
-  --n-color: #ff6a00 !important;
-  --n-color-hover: #ff7a1a !important;
-  --n-color-pressed: #e95f00 !important;
-  --n-color-focus: #ff6a00 !important;
-  --n-border: 1px solid #ff6a00 !important;
-  --n-border-hover: 1px solid #ff7a1a !important;
-  --n-border-pressed: 1px solid #e95f00 !important;
-  --n-border-focus: 1px solid #ff6a00 !important;
+  --n-color: #245bdb !important;
+  --n-color-hover: #1e4fc2 !important;
+  --n-color-pressed: #183f9d !important;
+  --n-color-focus: #245bdb !important;
+  --n-border: 1px solid #245bdb !important;
+  --n-border-hover: 1px solid #1e4fc2 !important;
+  --n-border-pressed: 1px solid #183f9d !important;
+  --n-border-focus: 1px solid #245bdb !important;
 }
 
 @media (max-width: 900px) {

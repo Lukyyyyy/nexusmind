@@ -3,11 +3,11 @@ import { getRgb } from '@sa/color';
 import { DARK_CLASS } from '@/constants/app';
 import { localStg } from '@/utils/storage';
 import { toggleHtmlClass } from '@/utils/common';
-import systemLogo from '@/assets/svg-icon/logo.svg?raw';
+import systemLogo from '@/assets/svg-icon/brand-symbol.svg?raw';
 import { $t } from '@/locales';
 
 export function setupLoading() {
-  const themeColor = localStg.get('themeColor') || '#646cff';
+  const themeColor = localStg.get('themeColor') || '#245bdb';
   const darkMode = localStg.get('darkMode') || false;
   const { r, g, b } = getRgb(themeColor);
 

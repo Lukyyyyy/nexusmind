@@ -30,7 +30,7 @@ const inputMinHeight = 24;
 const inputMaxHeight = 200;
 
 const scrollbarContentStyle = computed(() => ({
-  padding: `20px 24px ${inputDockHeight.value + 24}px`
+  padding: `28px 28px ${inputDockHeight.value + 30}px`
 }));
 
 function updateInputDockHeight() {
@@ -184,20 +184,22 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <main class="relative min-w-0 flex flex-1 flex-col bg-white dark:bg-#18181c">
-    <div class="flex h-52px shrink-0 items-center justify-between b-b b-#e5e7eb bg-white px-5 dark:b-#2b2b31 dark:bg-#18181c">
-      <NText strong class="truncate">{{ activeSession?.title || '新会话' }}</NText>
-      <div class="flex items-center text-18px color-gray-500">
-        <NText class="text-14px">连接状态：</NText>
+  <main class="chat-workspace relative min-w-0 flex flex-1 flex-col">
+    <div class="chat-toolbar">
+      <div class="min-w-0">
+        <NText strong class="block truncate text-15px">{{ activeSession?.title || '新会话' }}</NText>
+      </div>
+      <div class="chat-connection" :class="`is-${wsStatus.toLowerCase()}`">
         <icon-eos-icons:loading v-if="wsStatus === 'CONNECTING'" class="color-yellow" />
         <icon-fluent:plug-connected-checkmark-20-filled v-else-if="wsStatus === 'OPEN'" class="color-green" />
         <icon-tabler:plug-connected-x v-else class="color-red" />
+        <NText class="text-12px">{{ wsStatus === 'OPEN' ? '已连接' : wsStatus === 'CONNECTING' ? '连接中' : '未连接' }}</NText>
       </div>
     </div>
 
     <NScrollbar
       ref="scrollbarRef"
-      class="min-h-0 flex-1 bg-white dark:bg-#18181c"
+      class="min-h-0 flex-1"
       :content-style="scrollbarContentStyle"
     >
       <NSpin :show="loading">
@@ -249,17 +251,18 @@ onUnmounted(() => {
 <style scoped lang="scss">
 .chat-input-dock {
   isolation: isolate;
+  background: linear-gradient(to bottom, rgb(255 255 255 / 0%), #fff 30%, #fff 100%);
 
   &::before {
     content: '';
     position: absolute;
-    top: 16px;
+    top: 28px;
     bottom: 0;
     left: 50%;
     z-index: 0;
-    width: min(calc(100% - 32px), 760px);
-    border-radius: 32px 32px 0 0;
-    background: #fff;
+    width: min(calc(100% - 32px), 860px);
+    border-radius: 18px 18px 0 0;
+    background: transparent;
     transform: translateX(-50%);
   }
 }
@@ -277,16 +280,21 @@ onUnmounted(() => {
 .chat-input {
   display: flex;
   width: 100%;
-  max-width: 760px;
-  min-height: 64px;
+  max-width: 860px;
+  min-height: 68px;
   align-items: center;
   gap: 12px;
-  border-radius: 32px;
+  border: 1px solid #dfe6eb;
+  border-radius: 999px;
   background: #fff;
-  padding: 10px 12px 10px 22px;
-  box-shadow:
-    0 0 0 1px #e5e7eb,
-    0 12px 34px rgba(15, 23, 42, 0.08);
+  padding: 11px 12px 11px 18px;
+  box-shadow: 0 10px 30px rgb(15 23 42 / 8%);
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.chat-input:focus-within {
+  border-color: #84a6f2;
+  box-shadow: 0 0 0 3px rgb(36 91 219 / 10%), 0 12px 32px rgb(15 23 42 / 8%);
 }
 
 :global(.dark) .chat-input {
@@ -299,7 +307,7 @@ onUnmounted(() => {
   align-items: stretch;
   flex-direction: column;
   gap: 14px;
-  border-radius: 28px;
+  border-radius: 24px;
   padding: 18px 14px 12px 22px;
 }
 
@@ -313,7 +321,7 @@ onUnmounted(() => {
   background: transparent;
   padding: 0;
   color: #333;
-  font-size: 16px;
+  font-size: 15px;
   line-height: 24px;
   outline: none;
   caret-color: rgb(var(--primary-color));
@@ -354,5 +362,68 @@ onUnmounted(() => {
 
 .chat-input__send {
   flex-shrink: 0;
+  --n-width: 38px !important;
+  --n-height: 38px !important;
+  --n-border-radius: 999px !important;
+  border-radius: 50% !important;
+}
+
+.chat-workspace {
+  background: #fff;
+}
+
+.chat-toolbar {
+  display: flex;
+  min-height: 62px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid #e7ebef;
+  background: #fff;
+  padding: 10px 24px;
+}
+
+.chat-connection {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #dce6e4;
+  border-radius: 999px;
+  background: #f6faf9;
+  padding: 5px 9px;
+  color: #64748b;
+}
+
+:global(.dark) .chat-workspace,
+:global(.dark) .chat-toolbar {
+  border-color: #2b3440;
+  background: #181e25;
+}
+
+@media (max-width: 640px) {
+  .chat-toolbar {
+    min-height: 56px;
+    padding-right: 14px;
+    padding-left: 48px;
+  }
+
+  .chat-connection {
+    border: 0;
+    background: transparent;
+    padding-inline: 0;
+  }
+
+  .chat-input-dock {
+    padding-inline: 10px;
+  }
+
+  .chat-input {
+    border-radius: 999px;
+  }
+
+  .chat-input--expanded {
+    border-radius: 22px;
+  }
 }
 </style>

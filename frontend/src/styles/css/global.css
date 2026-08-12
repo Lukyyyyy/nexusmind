@@ -11,3 +11,164 @@ body,
 html {
   overflow-x: hidden;
 }
+
+:root {
+  --nexus-primary: #245bdb;
+  --nexus-primary-hover: #1e4fc2;
+  --nexus-primary-soft: #eef3ff;
+  --nexus-text: #182234;
+  --nexus-text-secondary: #667085;
+  --nexus-border: #e3e8ee;
+  --nexus-fill: #f6f8fa;
+  --nexus-shadow-sm: 0 1px 2px rgb(15 23 42 / 4%);
+}
+
+body {
+  color: var(--nexus-text);
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.nexus-layout-header {
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  width: auto !important;
+  border-bottom: 1px solid var(--nexus-border);
+  background: #fff;
+  box-shadow: var(--nexus-shadow-sm);
+}
+
+.nexus-layout-tab {
+  border-bottom: 1px solid var(--nexus-border);
+  background: #fff;
+}
+
+.nexus-layout-sider {
+  top: 0 !important;
+  left: 0 !important;
+  height: 100vh !important;
+  border-right: 1px solid var(--nexus-border);
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+.nexus-global-header,
+.nexus-global-tab,
+.nexus-global-sider {
+  box-shadow: none !important;
+}
+
+.nexus-global-header .n-button,
+.nexus-global-tab .n-button {
+  color: #4b5565;
+  transition: color 160ms ease, background-color 160ms ease;
+}
+
+#header-extra .n-card {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent;
+  box-shadow: none !important;
+}
+
+#header-extra .n-card__content {
+  padding: 0 !important;
+}
+
+.nexus-global-tab .n-button--primary-type {
+  color: #fff;
+}
+
+.nexus-logo {
+  border-bottom: 1px solid var(--nexus-border);
+  color: var(--nexus-primary);
+}
+
+.nexus-logo-mark {
+  display: flex;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  color: var(--nexus-primary);
+}
+
+.nexus-global-sider .n-menu {
+  padding: 10px 8px 52px;
+}
+
+.nexus-global-sider .n-menu.n-menu--collapsed {
+  padding-right: 0;
+  padding-left: 0;
+}
+
+.nexus-global-sider .n-menu-item-content {
+  min-height: 40px;
+  border-radius: 4px;
+  transition: color 160ms ease, background-color 160ms ease;
+}
+
+.nexus-global-sider .n-menu-item-content--selected {
+  background: var(--nexus-primary-soft) !important;
+}
+
+.nexus-global-sider .n-menu-item-content--selected .n-menu-item-content-header,
+.nexus-global-sider .n-menu-item-content--selected .n-icon {
+  color: var(--nexus-primary) !important;
+}
+
+.nexus-page-content > .n-card,
+.nexus-page-content .card-wrapper {
+  border: 1px solid var(--nexus-border) !important;
+  border-radius: 5px !important;
+  box-shadow: none !important;
+}
+
+.nexus-page-content .n-card-header {
+  padding: 16px 18px 12px;
+}
+
+.nexus-page-content .n-card-header__main {
+  color: var(--nexus-text);
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.nexus-page-content .n-data-table-th {
+  background: #f8fafb;
+  color: #475467;
+  font-weight: 600;
+}
+
+.nexus-page-content .n-data-table-tr:hover .n-data-table-td {
+  background: #f4f7ff !important;
+}
+
+.nexus-global-tab [data-tab-id] {
+  border-radius: 4px !important;
+}
+
+.n-card,
+.n-modal .n-card,
+.n-dialog {
+  box-shadow: 0 8px 24px rgb(15 23 42 / 8%);
+}
+
+.n-data-table,
+.n-input,
+.n-base-selection,
+.n-button {
+  --n-border-radius: 4px !important;
+}
+
+@media (max-width: 700px) {
+  .nexus-layout-header {
+    left: 0 !important;
+  }
+
+  .nexus-page-content {
+    padding: 12px !important;
+  }
+}

@@ -13,10 +13,18 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="h-full min-h-0 flex overflow-hidden bg-#f6f7fb dark:bg-#101014">
+  <div class="chat-page h-full min-h-0 flex overflow-hidden">
     <ChatList />
     <InputBox />
   </div>
 </template>
 
-<style scoped></style>
+<style scoped>
+.chat-page {
+  background: #fff;
+}
+
+:global(.dark) .chat-page {
+  background: #10151a;
+}
+</style>

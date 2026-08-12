@@ -16,9 +16,9 @@ withDefaults(defineProps<Props>(), {
 </script>
 
 <template>
-  <RouterLink to="/" class="w-full flex-center nowrap-hidden">
-    <SystemLogo class="text-32px text-primary" />
-    <h2 v-show="showTitle" class="pl-8px text-16px text-primary font-bold transition duration-300 ease-in-out">
+  <RouterLink to="/" class="nexus-logo w-full flex-y-center nowrap-hidden px-20px">
+    <span class="nexus-logo-mark"><SystemLogo class="text-30px" /></span>
+    <h2 v-show="showTitle" class="pl-10px text-16px text-#182234 font-650 transition duration-300 ease-in-out">
       {{ $t('system.title') }}
     </h2>
   </RouterLink>

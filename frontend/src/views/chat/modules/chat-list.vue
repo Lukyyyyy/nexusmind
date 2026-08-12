@@ -4,13 +4,22 @@ defineOptions({
 });
 
 const chatStore = useChatStore();
+const appStore = useAppStore();
 const { sessions, activeSessionId, sessionLoading } = storeToRefs(chatStore);
 
 const editingId = ref<number | null>(null);
 const editingTitle = ref('');
 const collapsedStorageKey = 'nexusmind-chat-panel-collapsed';
 const collapsed = ref(
-  typeof window !== 'undefined' && window.localStorage.getItem(collapsedStorageKey) === 'true'
+  appStore.isMobile || (typeof window !== 'undefined' && window.localStorage.getItem(collapsedStorageKey) === 'true')
+);
+
+watch(
+  () => appStore.isMobile,
+  isMobile => {
+    if (isMobile) collapsed.value = true;
+  },
+  { immediate: true }
 );
 
 function toggleCollapsed() {
@@ -74,9 +83,11 @@ async function handleDelete(sessionId: number) {
       {{ collapsed ? '展开会话列表' : '折叠会话列表' }}
     </NTooltip>
 
-    <div v-if="!collapsed" class="mb-3 flex items-center justify-between gap-2">
-      <NText strong>会话</NText>
-      <NButton size="small" type="primary" circle @click="handleCreate">
+    <div v-if="!collapsed" class="chat-list__header">
+      <div>
+        <NText strong class="block text-14px">历史会话</NText>
+      </div>
+      <NButton size="small" type="primary" circle aria-label="新建会话" @click="handleCreate">
         <template #icon>
           <icon-material-symbols:add />
         </template>
@@ -147,8 +158,8 @@ async function handleDelete(sessionId: number) {
 
 <style scoped lang="scss">
 .chat-list {
-  width: 280px;
-  padding: 12px;
+  width: 248px;
+  padding: 16px 12px 12px;
   transition:
     width 180ms ease,
     padding 180ms ease;
@@ -162,26 +173,36 @@ async function handleDelete(sessionId: number) {
 }
 
 .chat-list__scroll {
-  height: calc(100vh - 150px);
+  height: calc(100vh - 174px);
+}
+
+.chat-list__header {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 0 5px;
 }
 
 .chat-list__toggle {
   position: absolute;
   top: 50%;
-  right: -13px;
+  right: -29px;
   z-index: 10;
   display: flex;
-  width: 26px;
-  height: 72px;
+  width: 29px;
+  height: 36px;
   align-items: center;
   justify-content: center;
   border: 1px solid #e5e7eb;
-  border-radius: 999px;
+  border-radius: 0 8px 8px 0;
   background: #fff;
   color: #60636f;
   font-size: 20px;
   line-height: 1;
-  box-shadow: 0 8px 20px rgb(15 23 42 / 8%);
+  box-shadow: 0 3px 10px rgb(15 23 42 / 6%);
   transform: translateY(-50%);
   transition:
     color 160ms ease,
@@ -192,12 +213,21 @@ async function handleDelete(sessionId: number) {
 .chat-list__toggle:hover {
   border-color: rgb(var(--primary-color));
   color: rgb(var(--primary-color));
-  box-shadow: 0 10px 24px rgb(15 23 42 / 12%);
+  box-shadow: 0 4px 12px rgb(15 23 42 / 9%);
 }
 
 :global(.dark) .chat-list__toggle {
   border-color: #2b2b31;
   background: #18181c;
   color: #c9ccd6;
+}
+
+@media (max-width: 760px) {
+  .chat-list:not(.is-collapsed) {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 20;
+    box-shadow: 10px 0 30px rgb(15 23 42 / 12%);
+  }
 }
 </style>

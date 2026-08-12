@@ -397,12 +397,9 @@ onBeforeUnmount(() => graph?.destroy());
   position: relative;
   overflow: hidden;
   border: 1px solid #dfe5ed;
-  border-radius: 14px;
-  background:
-    radial-gradient(circle at 14% 4%, rgb(112 103 181 / 8%), transparent 34%),
-    radial-gradient(circle at 88% 92%, rgb(67 136 153 / 6%), transparent 30%),
-    #f8fafc;
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 75%);
+  border-radius: 5px;
+  background: #fff;
+  box-shadow: none;
 }
 
 .graph-frame:fullscreen {
@@ -421,8 +418,7 @@ onBeforeUnmount(() => graph?.destroy());
   gap: 12px;
   padding: 12px 14px;
   border-bottom: 1px solid #e4e9f0;
-  background: rgb(255 255 255 / 88%);
-  backdrop-filter: blur(12px);
+  background: #fff;
 }
 
 .graph-legend {
@@ -434,7 +430,8 @@ onBeforeUnmount(() => graph?.destroy());
   padding: 8px 14px;
   color: #64748b;
   font-size: 11px;
-  background: rgb(248 250 252 / 72%);
+  border-bottom: 1px solid #edf0f4;
+  background: #fff;
 }
 
 .graph-legend__item {
@@ -470,10 +467,9 @@ onBeforeUnmount(() => graph?.destroy());
   overflow: auto;
   padding: 16px;
   border: 1px solid rgb(148 163 184 / 24%);
-  border-radius: 12px;
-  background: rgb(255 255 255 / 94%);
-  box-shadow: 0 16px 40px rgb(15 23 42 / 14%);
-  backdrop-filter: blur(12px);
+  border-radius: 5px;
+  background: rgb(255 255 255 / 96%);
+  box-shadow: 0 8px 24px rgb(15 23 42 / 10%);
 }
 
 .graph-inspector h3 {

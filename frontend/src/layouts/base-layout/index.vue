@@ -122,6 +122,9 @@ function getSiderCollapsedWidth() {
     :footer-height="themeStore.footer.height"
     :fixed-footer="themeStore.footer.fixed"
     :right-footer="themeStore.footer.right"
+    header-class="nexus-layout-header"
+    tab-class="nexus-layout-tab"
+    sider-class="nexus-layout-sider"
   >
     <template #header>
       <GlobalHeader v-bind="headerProps" />

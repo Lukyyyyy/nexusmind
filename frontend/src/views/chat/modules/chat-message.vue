@@ -111,58 +111,73 @@ async function handleSourceFileClick(fileName: string) {
 </script>
 
 <template>
-  <div class="chat-message mb-8" :class="msg.role === 'user' ? 'chat-message--user' : 'chat-message--assistant'">
+  <div class="chat-message" :class="msg.role === 'user' ? 'chat-message--user' : 'chat-message--assistant'">
     <div class="chat-message__inner">
       <template v-if="msg.role === 'user'">
         <div class="chat-message__user-row">
-          <div class="chat-message__user-bubble">
-            <NText tag="div" class="chat-message__text whitespace-pre-wrap text-4">{{ content }}</NText>
+          <div class="chat-message__user-stack">
+            <div class="chat-message__user-bubble">
+              <NText tag="div" class="chat-message__text whitespace-pre-wrap text-4">{{ content }}</NText>
+            </div>
+            <div class="chat-message__actions justify-end">
+              <NButton quaternary size="tiny" aria-label="复制消息" @click="handleCopy(msg.content)">
+                <template #icon><icon-mynaui:copy /></template>
+              </NButton>
+            </div>
           </div>
         </div>
       </template>
 
       <template v-else>
-        <div class="chat-message__assistant-content">
-          <NText v-if="msg.status === 'pending'">
-            <icon-eos-icons:three-dots-loading class="text-8" />
-          </NText>
-          <NText v-else-if="msg.status === 'error'" class="italic">服务器繁忙，请稍后再试</NText>
-          <NText v-else tag="div" class="chat-message__markdown text-4" @click="handleContentClick">
-            <VueMarkdownIt :content="content" />
-          </NText>
+        <div class="chat-message__assistant-row">
+          <div class="chat-message__assistant-avatar" aria-hidden="true">
+            <SystemLogo />
+          </div>
+          <div class="chat-message__assistant-body">
+            <div class="chat-message__assistant-content">
+              <NText v-if="msg.status === 'pending'">
+                <icon-eos-icons:three-dots-loading class="text-8" />
+              </NText>
+              <NText v-else-if="msg.status === 'error'" class="italic">服务器繁忙，请稍后再试</NText>
+              <NText v-else tag="div" class="chat-message__markdown text-4" @click="handleContentClick">
+                <VueMarkdownIt :content="content" />
+              </NText>
+            </div>
+            <div class="chat-message__actions justify-start">
+              <NButton quaternary size="tiny" aria-label="复制消息" @click="handleCopy(msg.content)">
+                <template #icon><icon-mynaui:copy /></template>
+              </NButton>
+            </div>
+          </div>
         </div>
       </template>
-
-      <div class="chat-message__actions" :class="msg.role === 'user' ? 'justify-end' : 'justify-start'">
-        <NButton quaternary size="small" @click="handleCopy(msg.content)">
-          <template #icon>
-            <icon-mynaui:copy />
-          </template>
-        </NButton>
-      </div>
     </div>
   </div>
 </template>
 
 <style scoped lang="scss">
 :deep(.source-file-link) {
-  color: #1890ff;
+  color: #245bdb;
   cursor: pointer;
   text-decoration: underline;
   transition: color 0.2s;
 
   &:hover {
-    color: #40a9ff;
+    color: #1e4fc2;
     text-decoration: none;
   }
 
   &:active {
-    color: #096dd9;
+    color: #183f9d;
   }
 }
 
+.chat-message {
+  margin-bottom: 22px;
+}
+
 .chat-message__inner {
-  max-width: 760px;
+  max-width: 860px;
   margin: 0 auto;
 }
 
@@ -171,12 +186,21 @@ async function handleSourceFileClick(fileName: string) {
   justify-content: flex-end;
 }
 
+.chat-message__user-stack {
+  display: flex;
+  max-width: min(72%, 640px);
+  align-items: flex-end;
+  flex-direction: column;
+}
+
 .chat-message__user-bubble {
-  max-width: min(70%, 620px);
-  border-radius: 20px;
-  background: #f3f4f6;
-  padding: 10px 16px;
-  line-height: 1.5;
+  max-width: 100%;
+  border: 1px solid #d8e3fb;
+  border-radius: 14px 14px 4px;
+  background: #f1f5ff;
+  padding: 10px 14px;
+  color: #233438;
+  line-height: 1.6;
 }
 
 :global(.dark) .chat-message__user-bubble {
@@ -184,8 +208,32 @@ async function handleSourceFileClick(fileName: string) {
 }
 
 .chat-message__assistant-content {
-  max-width: 760px;
+  max-width: 790px;
   color: #1f2937;
+}
+
+.chat-message__assistant-row {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.chat-message__assistant-avatar {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid #d6e1fb;
+  border-radius: 9px;
+  background: #f2f6ff;
+  color: #245bdb;
+  font-size: 21px;
+}
+
+.chat-message__assistant-body {
+  min-width: 0;
+  padding-top: 4px;
 }
 
 :global(.dark) .chat-message__assistant-content {
@@ -194,7 +242,14 @@ async function handleSourceFileClick(fileName: string) {
 
 .chat-message__actions {
   display: flex;
-  margin-top: 6px;
+  min-height: 24px;
+  margin-top: 4px;
+  opacity: 0.45;
+  transition: opacity 160ms ease;
+}
+
+.chat-message:hover .chat-message__actions {
+  opacity: 1;
 }
 
 .chat-message__text,
@@ -251,13 +306,39 @@ async function handleSourceFileClick(fileName: string) {
   }
 
   :deep(.vp-doc a) {
-    color: #1677ff;
+    color: #245bdb;
     font-weight: inherit;
     text-underline-offset: 3px;
   }
 
   :deep(.vp-doc strong) {
     font-weight: 600;
+  }
+}
+
+@media (max-width: 640px) {
+  .chat-message {
+    margin-bottom: 18px;
+  }
+
+  .chat-message__inner {
+    max-width: 100%;
+  }
+
+  .chat-message__user-stack {
+    max-width: 86%;
+  }
+
+  .chat-message__assistant-row {
+    grid-template-columns: 28px minmax(0, 1fr);
+    gap: 9px;
+  }
+
+  .chat-message__assistant-avatar {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    font-size: 18px;
   }
 }
 </style>
