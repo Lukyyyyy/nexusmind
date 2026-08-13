@@ -10,6 +10,11 @@ const inputDockRef = ref<HTMLElement>();
 const inputDockHeight = ref(112);
 let inputDockResizeObserver: ResizeObserver | null = null;
 
+function finishThinking(message?: Api.Chat.Message) {
+  if (!message?.thinkingStartedAt || message.thinkingDurationMs != null) return;
+  message.thinkingDurationMs = Math.max(0, Date.now() - message.thinkingStartedAt);
+}
+
 const latestMessage = computed(() => {
   return messages.value[messages.value.length - 1] ?? {};
 });
@@ -84,6 +89,7 @@ watch(wsData, val => {
 
   if (data.type === 'completion' && data.status === 'finished') {
     if (assistant?.role === 'assistant' && assistant.status !== 'error') {
+      finishThinking(assistant);
       assistant.status = 'finished';
       if (Array.isArray(assistant.agentTrace)) {
         assistant.agentTrace = assistant.agentTrace.map(step =>
@@ -93,9 +99,13 @@ watch(wsData, val => {
     }
     chatStore.refreshActiveSessionMessages();
   } else if (data.error) {
-    if (assistant) assistant.status = 'error';
+    if (assistant) {
+      finishThinking(assistant);
+      assistant.status = 'error';
+    }
   } else if (data.chunk) {
     if (!assistant) return;
+    finishThinking(assistant);
     assistant.status = 'loading';
     assistant.content += data.chunk;
   }
@@ -121,6 +131,7 @@ const handleSend = async () => {
 
     chatStore.wsSend(JSON.stringify({ type: 'stop', _internal_cmd_token: data.cmdToken }));
 
+    finishThinking(messages.value[messages.value.length - 1]);
     messages.value[messages.value.length - 1].status = 'finished';
     if (!latestMessage.value.content) messages.value.pop();
     return;
@@ -142,7 +153,8 @@ const handleSend = async () => {
     content: '',
     role: 'assistant',
     status: 'pending',
-    agentTrace: []
+    agentTrace: [],
+    thinkingStartedAt: Date.now()
   });
   chatStore.wsSend(
     JSON.stringify({

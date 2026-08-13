@@ -609,6 +609,10 @@ declare namespace Api {
       status?: 'pending' | 'loading' | 'finished' | 'error';
       timestamp?: string;
       agentTrace?: AgentStep[] | string | null;
+      /** 客户端发出本轮请求的时间，用于实时展示思考耗时 */
+      thinkingStartedAt?: number;
+      /** 首个回答内容到达时冻结的思考耗时 */
+      thinkingDurationMs?: number;
     }
 
     interface Token {

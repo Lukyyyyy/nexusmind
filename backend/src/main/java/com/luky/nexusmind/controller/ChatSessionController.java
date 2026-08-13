@@ -117,6 +117,7 @@ public class ChatSessionController {
         data.put("content", message.getContent());
         data.put("status", message.getStatus());
         data.put("agentTrace", message.getAgentTrace());
+        data.put("thinkingDurationMs", message.getThinkingDurationMs());
         data.put("timestamp", message.getCreatedAt());
         return data;
     }

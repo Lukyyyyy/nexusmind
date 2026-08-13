@@ -28,7 +28,48 @@ const traceSteps = computed<Api.Chat.AgentStep[]>(() => {
   return [];
 });
 const traceRunning = computed(() => traceSteps.value.some(step => step.status === 'running'));
+const thinkingElapsedMs = ref(0);
+let thinkingTimer: ReturnType<typeof setInterval> | null = null;
+
+const thinkingRunning = computed(
+  () => props.msg.thinkingStartedAt != null && props.msg.thinkingDurationMs == null && !props.msg.content
+);
+const thinkingDuration = computed(() => props.msg.thinkingDurationMs ?? thinkingElapsedMs.value);
+const traceActive = computed(() => traceRunning.value || thinkingRunning.value);
+
+function formatDuration(durationMs: number) {
+  const seconds = durationMs / 1000;
+  return `${Math.max(0, Math.ceil(seconds))} 秒`;
+}
+
+const thinkingSummary = computed(() => {
+  if (props.msg.thinkingStartedAt == null && props.msg.thinkingDurationMs == null) return '';
+  return thinkingRunning.value
+    ? `已用时 ${formatDuration(thinkingDuration.value)}`
+    : `耗时 ${formatDuration(thinkingDuration.value)}`;
+});
+
+function stopThinkingTimer() {
+  if (thinkingTimer == null) return;
+  clearInterval(thinkingTimer);
+  thinkingTimer = null;
+}
+
+function syncThinkingTimer() {
+  stopThinkingTimer();
+  if (!thinkingRunning.value || !props.msg.thinkingStartedAt) return;
+  const updateElapsed = () => {
+    thinkingElapsedMs.value = Math.max(0, Date.now() - (props.msg.thinkingStartedAt || Date.now()));
+  };
+  updateElapsed();
+  thinkingTimer = setInterval(updateElapsed, 1000);
+}
+
+watch(thinkingRunning, syncThinkingTimer, { immediate: true });
+onUnmounted(stopThinkingTimer);
+
 const traceSummary = computed(() => {
+  if (thinkingRunning.value && !traceSteps.value.length) return '正在思考';
   if (traceRunning.value) return traceSteps.value.at(-1)?.title || '正在处理';
   const toolCount = traceSteps.value.filter(step => step.category === 'tool').length;
   return toolCount > 0 ? `已完成 · 调用了 ${toolCount} 个工具` : '已完成思考与整理';
@@ -174,7 +215,7 @@ async function handleSourceFileClick(fileName: string) {
             <SystemLogo />
           </div>
           <div class="chat-message__assistant-body">
-            <div v-if="traceSteps.length" class="agent-trace" :class="{ 'is-running': traceRunning }">
+            <div v-if="traceSteps.length || thinkingSummary" class="agent-trace" :class="{ 'is-running': traceActive }">
               <button
                 type="button"
                 class="agent-trace__summary"
@@ -182,9 +223,10 @@ async function handleSourceFileClick(fileName: string) {
                 @click="traceExpanded = !traceExpanded"
               >
                 <span class="agent-trace__summary-main">
-                  <icon-eos-icons:three-dots-loading v-if="traceRunning" class="agent-trace__spinner" />
+                  <icon-eos-icons:three-dots-loading v-if="traceActive" class="agent-trace__spinner" />
                   <icon-solar:magic-stick-3-linear v-else />
                   <span>{{ traceSummary }}</span>
+                  <span v-if="thinkingSummary" class="agent-trace__thinking-time">· {{ thinkingSummary }}</span>
                 </span>
                 <icon-material-symbols:keyboard-arrow-down-rounded
                   class="agent-trace__arrow"
@@ -362,6 +404,12 @@ async function handleSourceFileClick(fileName: string) {
 
 .agent-trace__spinner {
   color: #245bdb;
+}
+
+.agent-trace__thinking-time {
+  color: #718096;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
 .agent-trace__arrow {

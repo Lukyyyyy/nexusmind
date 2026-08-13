@@ -108,7 +108,26 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
   }
 
   async function refreshActiveSessionMessages() {
-    await loadMessages(activeSessionId.value);
+    const sessionId = activeSessionId.value;
+    const timingByAssistantIndex = messages.value
+      .filter(message => message.role === 'assistant')
+      .map(message => ({
+        thinkingStartedAt: message.thinkingStartedAt,
+        thinkingDurationMs: message.thinkingDurationMs
+      }));
+    await loadMessages(sessionId);
+    if (activeSessionId.value !== sessionId) return;
+    let assistantIndex = 0;
+    messages.value = messages.value.map(message => {
+      if (message.role !== 'assistant') return message;
+      const timing = timingByAssistantIndex[assistantIndex++];
+      if (!timing) return message;
+      return {
+        ...message,
+        thinkingStartedAt: timing.thinkingStartedAt,
+        thinkingDurationMs: message.thinkingDurationMs ?? timing.thinkingDurationMs
+      };
+    });
     await loadSessions();
   }
 

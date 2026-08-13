@@ -18,6 +18,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -99,6 +100,8 @@ public class ChatHandler {
         logger.info("开始处理消息，用户ID: {}, 会话ID: {}", userId, session.getId());
         AiTraceService.TraceSpan traceSpan = AiTraceService.TraceSpan.noop();
         AtomicBoolean traceFinished = new AtomicBoolean(false);
+        long thinkingStartedAtNanos = System.nanoTime();
+        AtomicLong thinkingDurationMs = new AtomicLong(-1L);
         try {
             // 1. 校验并使用显式会话 ID
             chatSessionService.getOwnedActiveSession(userId, chatSessionId);
@@ -129,6 +132,7 @@ public class ChatHandler {
                     agentOrchestrator.run(userId, userMessage, history, agentContext,
                             event -> recordAndSendAgentEvent(session, event),
                             chunk -> {
+                                captureThinkingDuration(thinkingStartedAtNanos, thinkingDurationMs);
                                 StringBuilder responseBuilder = responseBuilders.get(session.getId());
                                 if (responseBuilder != null) responseBuilder.append(chunk);
                                 sendResponseChunk(session, chunk);
@@ -141,7 +145,7 @@ public class ChatHandler {
                                 agentEvents.remove(session.getId());
                             },
                             () -> completeResponse(userId, chatSessionId, userMessage, session,
-                                    currentTrace, traceFinished));
+                                    currentTrace, traceFinished, thinkingStartedAtNanos, thinkingDurationMs));
                     return;
                 } catch (RuntimeException agentError) {
                     logger.warn("Tool Calling 不可用，回退固定 RAG: {}", agentError.getMessage());
@@ -202,6 +206,7 @@ public class ChatHandler {
                 session.getId(),
                 conversationId,
                 chunk -> {
+                    captureThinkingDuration(thinkingStartedAtNanos, thinkingDurationMs);
                     // 累积响应内容
                     StringBuilder responseBuilder = responseBuilders.get(session.getId());
                     if (responseBuilder != null) {
@@ -217,7 +222,8 @@ public class ChatHandler {
                     agentEvents.remove(session.getId());
                 },
                 () -> {
-                    completeResponse(userId, chatSessionId, userMessage, session, currentTrace, traceFinished);
+                    completeResponse(userId, chatSessionId, userMessage, session, currentTrace, traceFinished,
+                            thinkingStartedAtNanos, thinkingDurationMs);
                 });
             
         } catch (Exception e) {
@@ -238,7 +244,9 @@ public class ChatHandler {
                                   String userMessage,
                                   WebSocketSession session,
                                   AiTraceService.TraceSpan currentTrace,
-                                  AtomicBoolean traceFinished) {
+                                  AtomicBoolean traceFinished,
+                                  long thinkingStartedAtNanos,
+                                  AtomicLong thinkingDurationMs) {
         try {
             StringBuilder responseBuilder = responseBuilders.get(session.getId());
             if (responseBuilder == null) {
@@ -257,7 +265,9 @@ public class ChatHandler {
             currentTrace.attribute("nexusmind.llm.stream.completed", true)
                     .attribute("nexusmind.trace.end_reason", "llm_stream_complete");
 
-            persistCompletedExchange(userId, chatSessionId, userMessage, completeResponse, session);
+            captureThinkingDuration(thinkingStartedAtNanos, thinkingDurationMs);
+            persistCompletedExchange(userId, chatSessionId, userMessage, completeResponse, session,
+                    thinkingDurationMs.get());
             sendCompletionNotification(session, chatSessionId);
             logger.info("消息处理完成，用户ID: {}, 会话ID: {}", userId, chatSessionId);
         } catch (Exception e) {
@@ -275,10 +285,11 @@ public class ChatHandler {
                                           Long chatSessionId,
                                           String userMessage,
                                           String completeResponse,
-                                          WebSocketSession session) {
+                                          WebSocketSession session,
+                                          long thinkingDurationMs) {
         String agentTrace = serializeAgentTrace(session.getId());
         boolean firstExchange = chatSessionService.appendCompletedExchange(
-                userId, chatSessionId, userMessage, completeResponse, null, agentTrace);
+                userId, chatSessionId, userMessage, completeResponse, null, agentTrace, thinkingDurationMs);
         logger.info("对话已持久化到数据库，会话ID: {}", chatSessionId);
         if (!firstExchange) {
             return;
@@ -289,6 +300,11 @@ public class ChatHandler {
                 sendTitleUpdateNotification(session, chatSessionId, title);
             }
         }, "chat-title-" + chatSessionId).start();
+    }
+
+    private void captureThinkingDuration(long startedAtNanos, AtomicLong durationMs) {
+        long elapsedMs = Math.max(0L, (System.nanoTime() - startedAtNanos) / 1_000_000L);
+        durationMs.compareAndSet(-1L, elapsedMs);
     }
 
     private String buildContext(List<SearchResult> searchResults) {

@@ -125,6 +125,18 @@ class ChatSessionServiceTest {
     }
 
     @Test
+    void appendCompletedExchangePersistsThinkingDurationOnAssistantMessage() {
+        users.save(user("alice", 1L));
+        ChatSession session = service.createSession("alice");
+
+        service.appendCompletedExchange("alice", session.getId(), "问题", "回答", null, null, 1234L);
+
+        List<ChatMessage> stored = service.getMessages("alice", session.getId());
+        assertNull(stored.get(0).getThinkingDurationMs());
+        assertEquals(1234L, stored.get(1).getThinkingDurationMs());
+    }
+
+    @Test
     void updateGeneratedTitleIgnoresBlankTitleAndUpdatesOwnedSession() {
         users.save(user("alice", 1L));
         ChatSession session = service.createSession("alice");

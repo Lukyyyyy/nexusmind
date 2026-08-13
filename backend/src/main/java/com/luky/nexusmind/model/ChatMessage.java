@@ -35,6 +35,10 @@ public class ChatMessage {
     @Column(name = "agent_trace", columnDefinition = "TEXT")
     private String agentTrace;
 
+    /** 从开始处理请求到首个回答内容输出的耗时（毫秒）。 */
+    @Column(name = "thinking_duration_ms")
+    private Long thinkingDurationMs;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;
