@@ -41,7 +41,7 @@ public class AgentOrchestrator {
                              ToolRegistry toolRegistry,
                              ObjectMapper objectMapper,
                              @Value("${ai.agent.tool-calling-enabled:true}") boolean enabled,
-                             @Value("${ai.agent.max-tool-rounds:2}") int maxToolRounds,
+                             @Value("${ai.agent.max-tool-rounds:3}") int maxToolRounds,
                              @Value("${ai.agent.max-calls-per-round:3}") int maxCallsPerRound) {
         this.deepSeekClient = deepSeekClient;
         this.toolRegistry = toolRegistry;
