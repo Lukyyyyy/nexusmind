@@ -372,6 +372,7 @@ declare namespace Api {
 
     interface DocumentChunk {
       fileMd5: string;
+      fileName?: string;
       chunkId: number;
       contentPreview: string;
       content?: string;
@@ -396,6 +397,12 @@ declare namespace Api {
       size: number;
       totalPages: number;
       chunks: DocumentChunk[];
+    }
+
+    interface DocumentChunkSummary {
+      fileMd5: string;
+      fileName: string;
+      totalChunks: number;
     }
   }
 

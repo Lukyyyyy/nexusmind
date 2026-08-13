@@ -1,12 +1,8 @@
 <script setup lang="ts">
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-import { nextTick } from 'vue';
 import { VueMarkdownIt } from 'vue-markdown-shiki';
 defineOptions({ name: 'ChatMessage' });
 
 const props = defineProps<{ msg: Api.Chat.Message }>();
-
-const authStore = useAuthStore();
 
 function handleCopy(content: string) {
   navigator.clipboard.writeText(content);
@@ -96,29 +92,62 @@ function formatInput(input?: Record<string, string | number> | null) {
     .map(([key, value]) => ({ label: labels[key] || key, value }));
 }
 
-// 存储文件名和对应的事件处理
-const sourceFiles = ref<Array<{fileName: string, id: string}>>([]);
+const sourceNames = reactive<Record<string, string>>({});
+const loadingSourceNames = new Set<string>();
+const sourceDialogVisible = ref(false);
+const sourceLoading = ref(false);
+const selectedSource = ref<Api.KnowledgeBase.DocumentChunk | null>(null);
 
-// 处理来源文件链接的函数
-function processSourceLinks(text: string): string {
-  // 匹配 (来源#数字: 文件名) 的正则表达式
-  const sourcePattern = /\(来源#(\d+):\s*([^)]+)\)/g;
+const sourceTokenPattern = /kb:([a-f\d]{32,64}):(\d+(?:\s*[、,，]\s*\d+)*)/gi;
+const wrappedSourcePattern = /[（(]\s*来源\s*[：:]\s*(kb:[a-f\d]{32,64}:\d+(?:\s*[、,，]\s*\d+)*)\s*[）)]/gi;
 
-  return text.replace(sourcePattern, (_match, sourceNum, fileName) => {
-    // 为文件名创建可点击的链接
-    const linkClass = 'source-file-link';
-    const encodedFileName = encodeURIComponent(fileName.trim());
-    const fileId = `source-file-${sourceFiles.value.length}`;
-
-    // 存储文件信息
-    sourceFiles.value.push({
-      fileName: encodedFileName,
-      id: fileId
-    });
-
-    return `(来源#${sourceNum}: <span class="${linkClass}" data-file-id="${fileId}">${fileName}</span>)`;
+function escapeHtml(value: string) {
+  return value.replace(/[&<>"']/g, character => {
+    const entities: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+    return entities[character];
   });
 }
+
+function renderSourceReferences(fileMd5: string, chunkIds: string) {
+  const fileName = escapeHtml(sourceNames[fileMd5] || '文档');
+  return chunkIds
+    .split(/\s*[、,，]\s*/)
+    .map(chunkId =>
+      `<button type="button" class="source-reference" data-file-md5="${fileMd5}" data-chunk-id="${chunkId}">${fileName} · 分片 ${chunkId}</button>`
+    )
+    .join(' ');
+}
+
+function processSourceReferences(text: string) {
+  const replaceToken = (_match: string, fileMd5: string, chunkIds: string) =>
+    renderSourceReferences(fileMd5.toLowerCase(), chunkIds);
+  return text
+    .replace(wrappedSourcePattern, (_match, token: string) => token.replace(sourceTokenPattern, replaceToken))
+    .replace(sourceTokenPattern, replaceToken);
+}
+
+function collectSourceFileMd5s(text: string) {
+  return [...text.matchAll(sourceTokenPattern)].map(match => match[1].toLowerCase());
+}
+
+async function resolveSourceName(fileMd5: string) {
+  if (sourceNames[fileMd5] || loadingSourceNames.has(fileMd5)) return;
+  loadingSourceNames.add(fileMd5);
+  const { error, data } = await request<Api.KnowledgeBase.DocumentChunkSummary>({
+    url: `/documents/${fileMd5}/chunks/summary`
+  });
+  if (!error && data?.fileName) sourceNames[fileMd5] = data.fileName;
+  loadingSourceNames.delete(fileMd5);
+}
+
+watch(
+  () => props.msg.content,
+  text => {
+    if (props.msg.role !== 'assistant') return;
+    new Set(collectSourceFileMd5s(text || '')).forEach(resolveSourceName);
+  },
+  { immediate: true }
+);
 
 const content = computed(() => {
   chatStore.scrollToBottom?.();
@@ -126,68 +155,40 @@ const content = computed(() => {
 
   // 只对助手消息处理来源链接
   if (props.msg.role === 'assistant') {
-    return processSourceLinks(rawContent);
+    return processSourceReferences(rawContent);
   }
 
   return rawContent;
 });
 
 // 处理内容点击事件（事件委托）
-function handleContentClick(event: MouseEvent) {
+async function handleContentClick(event: MouseEvent) {
   const target = event.target as HTMLElement;
 
-  // 检查点击的是否是文件链接
-  if (target.classList.contains('source-file-link')) {
-    const fileId = target.getAttribute('data-file-id');
-    if (fileId) {
-      const file = sourceFiles.value.find(f => f.id === fileId);
-      if (file) {
-        handleSourceFileClick(file.fileName);
-      }
-    }
+  const sourceButton = target.closest<HTMLElement>('.source-reference');
+  const fileMd5 = sourceButton?.dataset.fileMd5;
+  const chunkId = Number(sourceButton?.dataset.chunkId);
+  if (!fileMd5 || !Number.isInteger(chunkId)) return;
+
+  selectedSource.value = {
+    fileMd5,
+    fileName: sourceNames[fileMd5] || '文档',
+    chunkId,
+    contentPreview: '',
+    contentLength: 0,
+    byteSize: 0,
+    configuredChunkSize: 0
+  };
+  sourceDialogVisible.value = true;
+  sourceLoading.value = true;
+  const { error, data } = await request<Api.KnowledgeBase.DocumentChunk>({
+    url: `/documents/${fileMd5}/chunks/${chunkId}`
+  });
+  if (!error) {
+    selectedSource.value = data;
+    if (data.fileName) sourceNames[fileMd5] = data.fileName;
   }
-}
-
-// 处理来源文件点击事件
-async function handleSourceFileClick(fileName: string) {
-  const decodedFileName = decodeURIComponent(fileName);
-  console.log('点击了来源文件:', decodedFileName);
-
-  try {
-    window.$message?.loading(`正在获取文件下载链接: ${decodedFileName}`, {
-      duration: 0,
-      closable: false
-    });
-
-    // 调用文件下载接口
-    const { error, data } = await request<Api.Document.DownloadResponse>({
-      url: 'documents/download',
-      params: {
-        fileName: decodedFileName,
-        token: authStore.token
-      },
-      baseURL: '/proxy-api'
-    });
-
-    window.$message?.destroyAll();
-
-    if (error) {
-      window.$message?.error(`文件下载失败: ${error.response?.data?.message || '未知错误'}`);
-      return;
-    }
-
-    if (data?.downloadUrl) {
-      // 在新窗口打开下载链接
-      window.open(data.downloadUrl, '_blank');
-      window.$message?.success(`文件下载链接已打开: ${decodedFileName}`);
-    } else {
-      window.$message?.error('未能获取到下载链接');
-    }
-  } catch (err) {
-    window.$message?.destroyAll();
-    console.error('文件下载失败:', err);
-    window.$message?.error(`文件下载失败: ${decodedFileName}`);
-  }
+  sourceLoading.value = false;
 }
 </script>
 
@@ -276,24 +277,58 @@ async function handleSourceFileClick(fileName: string) {
         </div>
       </template>
     </div>
+    <NModal
+      v-model:show="sourceDialogVisible"
+      preset="card"
+      class="source-dialog"
+      :title="`${selectedSource?.fileName || '文档'} · 分片 ${selectedSource?.chunkId ?? ''}`"
+      :style="{ width: 'min(680px, 92vw)' }"
+    >
+      <NSpin :show="sourceLoading">
+        <div class="source-dialog__content">{{ selectedSource?.content || '' }}</div>
+      </NSpin>
+    </NModal>
   </div>
 </template>
 
 <style scoped lang="scss">
-:deep(.source-file-link) {
+:deep(.source-reference) {
+  display: inline-flex;
+  align-items: center;
+  border: 0;
+  border-radius: 5px;
+  background: #eef3ff;
+  padding: 1px 6px;
   color: #245bdb;
   cursor: pointer;
-  text-decoration: underline;
-  transition: color 0.2s;
+  font: inherit;
+  font-size: 0.86em;
+  line-height: 1.55;
+  transition: background 0.16s ease;
 
   &:hover {
-    color: #1e4fc2;
-    text-decoration: none;
+    background: #dfe9ff;
   }
+}
 
-  &:active {
-    color: #183f9d;
-  }
+:global(.dark) :deep(.source-reference) {
+  background: #26334f;
+  color: #a9c2ff;
+}
+
+.source-dialog__content {
+  max-height: min(62vh, 620px);
+  min-height: 80px;
+  overflow-y: auto;
+  color: #334155;
+  font-size: 14px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+:global(.dark) .source-dialog__content {
+  color: #e2e8f0;
 }
 
 .chat-message {
