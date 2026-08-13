@@ -30,6 +30,11 @@ public class ChatMessage {
     @Column(nullable = false, length = 20)
     private String status;
 
+    /** JSON array containing safe, user-visible Agent execution summaries. */
+    @Lob
+    @Column(name = "agent_trace", columnDefinition = "TEXT")
+    private String agentTrace;
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private LocalDateTime createdAt;

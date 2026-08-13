@@ -50,6 +50,9 @@ public interface DocumentVectorRepository extends JpaRepository<DocumentVector, 
 
     List<DocumentVector> findByFileMd5AndChunkIdOrderByVectorIdAsc(String fileMd5, Integer chunkId);
 
+    List<DocumentVector> findByFileMd5AndChunkIdBetweenOrderByChunkIdAscVectorIdAsc(
+            String fileMd5, Integer firstChunkId, Integer lastChunkId);
+
     long countByFileMd5(String fileMd5);
 
     @Query(value = "SELECT COUNT(DISTINCT chunk_id) FROM document_vectors WHERE file_md5 = :fileMd5", nativeQuery = true)

@@ -178,6 +178,10 @@ langfuse:
     capture-content: ${LANGFUSE_CAPTURE_CONTENT:true}
 
 ai:
+  agent:
+    tool-calling-enabled: ${AI_AGENT_TOOL_CALLING_ENABLED:true}
+    max-tool-rounds: ${AI_AGENT_MAX_TOOL_ROUNDS:2}
+    max-calls-per-round: ${AI_AGENT_MAX_CALLS_PER_ROUND:3}
   prompt:
     rules: |
       你是知枢知识助手，须遵守：

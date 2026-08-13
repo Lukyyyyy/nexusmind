@@ -17,6 +17,8 @@ import org.slf4j.LoggerFactory;
 import com.luky.nexusmind.config.AiProperties;
 import com.luky.nexusmind.service.AiTraceService;
 import com.luky.nexusmind.service.ModelConfigService;
+import com.luky.nexusmind.agent.ToolCall;
+import com.luky.nexusmind.agent.ToolDefinition;
 
 @Service
 public class DeepSeekClient {
@@ -110,6 +112,132 @@ public class DeepSeekClient {
         } finally {
             span.close();
         }
+    }
+
+    public AgentDecision callWithTools(String configUsername,
+                                       List<Map<String, Object>> messages,
+                                       List<ToolDefinition> tools,
+                                       String userId,
+                                       String sessionId,
+                                       String conversationId) {
+        ModelConfigService.ResolvedModelConfig modelConfig = modelConfigService.resolveLlmConfig(configUsername);
+        Map<String, Object> request = new java.util.HashMap<>();
+        request.put("model", modelConfig.modelName());
+        request.put("messages", messages);
+        request.put("stream", false);
+        request.put("temperature", 0.1);
+        request.put("tools", tools.stream().map(tool -> Map.of(
+                "type", "function",
+                "function", Map.of(
+                        "name", tool.name(),
+                        "description", tool.description(),
+                        "parameters", tool.parameters()))).toList());
+        request.put("tool_choice", "auto");
+
+        AiTraceService.TraceSpan span = aiTraceService.startSpan(
+                        "llm.agent.tool_decision", userId, sessionId, conversationId)
+                .attribute("langfuse.observation.type", "generation")
+                .attribute("gen_ai.request.model", modelConfig.modelName())
+                .attribute("nexusmind.agent.tool.count", tools.size());
+        try {
+            String response = buildWebClient(modelConfig).post()
+                    .uri("/chat/completions")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(request)
+                    .retrieve()
+                    .bodyToMono(String.class)
+                    .block();
+            if (response == null || response.isBlank()) throw new IllegalStateException("模型返回空响应");
+            JsonNode message = new ObjectMapper().readTree(response)
+                    .path("choices").path(0).path("message");
+            if (message.isMissingNode() || message.isNull()) throw new IllegalStateException("模型响应缺少 message");
+            List<ToolCall> calls = new ArrayList<>();
+            for (JsonNode call : message.path("tool_calls")) {
+                String id = call.path("id").asText("");
+                String name = call.path("function").path("name").asText("");
+                String rawArguments = call.path("function").path("arguments").asText("{}");
+                JsonNode arguments = new ObjectMapper().readTree(rawArguments.isBlank() ? "{}" : rawArguments);
+                if (!id.isBlank() && !name.isBlank()) calls.add(new ToolCall(id, name, arguments, rawArguments));
+            }
+            span.attribute("nexusmind.agent.tool_calls.count", calls.size());
+            span.end();
+            return new AgentDecision(message.deepCopy(), calls);
+        } catch (Exception e) {
+            span.error(e);
+            span.end();
+            throw e instanceof RuntimeException runtime ? runtime : new RuntimeException("Tool Calling 请求失败", e);
+        } finally {
+            span.close();
+        }
+    }
+
+    public void streamAgentResponse(String configUsername,
+                                    List<Map<String, Object>> messages,
+                                    String userId,
+                                    String sessionId,
+                                    String conversationId,
+                                    Consumer<String> onChunk,
+                                    Consumer<Throwable> onError,
+                                    Runnable onComplete) {
+        ModelConfigService.ResolvedModelConfig modelConfig = modelConfigService.resolveLlmConfig(configUsername);
+        Map<String, Object> request = new java.util.HashMap<>();
+        request.put("model", modelConfig.modelName());
+        request.put("messages", messages);
+        request.put("stream", true);
+        request.put("stream_options", Map.of("include_usage", true));
+        if (modelConfig.temperature() != null) request.put("temperature", modelConfig.temperature());
+        if (modelConfig.topP() != null) request.put("top_p", modelConfig.topP());
+        if (modelConfig.maxTokens() != null) request.put("max_tokens", modelConfig.maxTokens());
+        streamRequest(buildWebClient(modelConfig), request, modelConfig.modelName(), userId, sessionId,
+                conversationId, onChunk, onError, onComplete);
+    }
+
+    private void streamRequest(WebClient webClient,
+                               Map<String, Object> request,
+                               String modelName,
+                               String userId,
+                               String sessionId,
+                               String conversationId,
+                               Consumer<String> onChunk,
+                               Consumer<Throwable> onError,
+                               Runnable onComplete) {
+        AiTraceService.TraceSpan span = aiTraceService.startSpan(
+                        "llm.agent.stream", userId, sessionId, conversationId)
+                .attribute("langfuse.observation.type", "generation")
+                .attribute("gen_ai.request.model", modelName);
+        AtomicLong responseChars = new AtomicLong();
+        AtomicReference<Usage> usage = new AtomicReference<>();
+        try {
+            webClient.post().uri("/chat/completions")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .bodyValue(request).retrieve().bodyToFlux(String.class)
+                    .subscribe(chunk -> processChunk(chunk, content -> {
+                                responseChars.addAndGet(content.length());
+                                onChunk.accept(content);
+                            }, usage::set),
+                            error -> {
+                                span.attribute("gen_ai.response.output_chars", responseChars.get());
+                                applyUsageAttributes(span, usage.get());
+                                span.error(error);
+                                span.end();
+                                onError.accept(error);
+                            },
+                            () -> {
+                                span.attribute("gen_ai.response.output_chars", responseChars.get());
+                                applyUsageAttributes(span, usage.get());
+                                span.end();
+                                onComplete.run();
+                            });
+        } catch (RuntimeException e) {
+            span.error(e);
+            span.end();
+            throw e;
+        } finally {
+            span.close();
+        }
+    }
+
+    public record AgentDecision(JsonNode assistantMessage, List<ToolCall> toolCalls) {
     }
 
     public String generateTitle(String configUsername, String userMessage, String assistantResponse) {

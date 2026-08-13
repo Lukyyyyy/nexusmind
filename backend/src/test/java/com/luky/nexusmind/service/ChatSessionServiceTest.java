@@ -112,6 +112,19 @@ class ChatSessionServiceTest {
     }
 
     @Test
+    void appendCompletedExchangePersistsAgentTraceOnAssistantMessage() {
+        users.save(user("alice", 1L));
+        ChatSession session = service.createSession("alice");
+        String trace = "[{\"stepId\":\"thinking\",\"title\":\"正在分析问题\"}]";
+
+        service.appendCompletedExchange("alice", session.getId(), "问题", "回答", null, trace);
+
+        List<ChatMessage> stored = service.getMessages("alice", session.getId());
+        assertNull(stored.get(0).getAgentTrace());
+        assertEquals(trace, stored.get(1).getAgentTrace());
+    }
+
+    @Test
     void updateGeneratedTitleIgnoresBlankTitleAndUpdatesOwnedSession() {
         users.save(user("alice", 1L));
         ChatSession session = service.createSession("alice");

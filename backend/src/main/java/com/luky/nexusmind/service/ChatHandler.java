@@ -2,11 +2,15 @@ package com.luky.nexusmind.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.luky.nexusmind.client.DeepSeekClient;
+import com.luky.nexusmind.agent.AgentContext;
+import com.luky.nexusmind.agent.AgentEvent;
+import com.luky.nexusmind.agent.AgentOrchestrator;
 import com.luky.nexusmind.entity.SearchResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -15,6 +19,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.ArrayList;
+import java.util.Collections;
 
 /**
  * 聊天处理服务
@@ -31,6 +37,7 @@ public class ChatHandler {
     private final ObjectMapper objectMapper;
     private final AiTraceService aiTraceService;
     private final ChatSessionService chatSessionService;
+    private final AgentOrchestrator agentOrchestrator;
 
     @Autowired(required = false)
     private KnowledgeGraphRetrievalService graphRetrievalService;
@@ -39,15 +46,35 @@ public class ChatHandler {
     private final Map<String, StringBuilder> responseBuilders = new ConcurrentHashMap<>();
     // 停止标志 - 简单方案
     private final Map<String, Boolean> stopFlags = new ConcurrentHashMap<>();
+    private final Map<String, List<AgentEvent>> agentEvents = new ConcurrentHashMap<>();
 
     public ChatHandler(HybridSearchService searchService,
                       DeepSeekClient deepSeekClient,
                       AiTraceService aiTraceService,
                       ChatSessionService chatSessionService) {
+        this(searchService, deepSeekClient, aiTraceService, chatSessionService, (AgentOrchestrator) null);
+    }
+
+    @Autowired
+    public ChatHandler(HybridSearchService searchService,
+                      DeepSeekClient deepSeekClient,
+                      AiTraceService aiTraceService,
+                      ChatSessionService chatSessionService,
+                      ObjectProvider<AgentOrchestrator> agentOrchestratorProvider) {
+        this(searchService, deepSeekClient, aiTraceService, chatSessionService,
+                agentOrchestratorProvider != null ? agentOrchestratorProvider.getIfAvailable() : null);
+    }
+
+    private ChatHandler(HybridSearchService searchService,
+                       DeepSeekClient deepSeekClient,
+                       AiTraceService aiTraceService,
+                       ChatSessionService chatSessionService,
+                       AgentOrchestrator agentOrchestrator) {
         this.searchService = searchService;
         this.deepSeekClient = deepSeekClient;
         this.aiTraceService = aiTraceService;
         this.chatSessionService = chatSessionService;
+        this.agentOrchestrator = agentOrchestrator;
         this.objectMapper = new ObjectMapper();
     }
 
@@ -87,11 +114,41 @@ public class ChatHandler {
             
             // 为当前会话创建响应构建器
             responseBuilders.put(session.getId(), new StringBuilder());
+            agentEvents.put(session.getId(), Collections.synchronizedList(new ArrayList<>()));
             
             // 2. 获取对话历史
             List<Map<String, String>> history = chatSessionService.getRecentHistory(userId, chatSessionId, 20);
             logger.debug("获取到 {} 条历史对话", history.size());
             currentTrace.attribute("nexusmind.history.count", history.size());
+
+            // 优先使用受控 Tool Calling；模型或协议不兼容时自动回退原有固定 RAG。
+            if (agentOrchestrator != null && agentOrchestrator.isEnabled()) {
+                try {
+                    AgentContext agentContext = new AgentContext(userId, chatSessionId, session.getId(), effectiveTraceUserId);
+                    currentTrace.attribute("nexusmind.agent.enabled", true);
+                    agentOrchestrator.run(userId, userMessage, history, agentContext,
+                            event -> recordAndSendAgentEvent(session, event),
+                            chunk -> {
+                                StringBuilder responseBuilder = responseBuilders.get(session.getId());
+                                if (responseBuilder != null) responseBuilder.append(chunk);
+                                sendResponseChunk(session, chunk);
+                            },
+                            error -> {
+                                handleError(session, error);
+                                currentTrace.error(error);
+                                finishTrace(currentTrace, traceFinished);
+                                responseBuilders.remove(session.getId());
+                                agentEvents.remove(session.getId());
+                            },
+                            () -> completeResponse(userId, chatSessionId, userMessage, session,
+                                    currentTrace, traceFinished));
+                    return;
+                } catch (RuntimeException agentError) {
+                    logger.warn("Tool Calling 不可用，回退固定 RAG: {}", agentError.getMessage());
+                    currentTrace.attribute("nexusmind.agent.fallback", true);
+                    responseBuilders.put(session.getId(), new StringBuilder());
+                }
+            }
             
             // 3. 执行带权限过滤的混合搜索
             List<SearchResult> searchResults;
@@ -157,6 +214,7 @@ public class ChatHandler {
                     currentTrace.error(error);
                     finishTrace(currentTrace, traceFinished);
                     responseBuilders.remove(session.getId());
+                    agentEvents.remove(session.getId());
                 },
                 () -> {
                     completeResponse(userId, chatSessionId, userMessage, session, currentTrace, traceFinished);
@@ -169,6 +227,7 @@ public class ChatHandler {
             handleError(session, e);
             // 清理会话响应构建器
             responseBuilders.remove(session.getId());
+            agentEvents.remove(session.getId());
         } finally {
             traceSpan.close();
         }
@@ -207,6 +266,7 @@ public class ChatHandler {
             handleError(session, e);
         } finally {
             responseBuilders.remove(session.getId());
+            agentEvents.remove(session.getId());
             finishTrace(currentTrace, traceFinished);
         }
     }
@@ -216,7 +276,9 @@ public class ChatHandler {
                                           String userMessage,
                                           String completeResponse,
                                           WebSocketSession session) {
-        boolean firstExchange = chatSessionService.appendCompletedExchange(userId, chatSessionId, userMessage, completeResponse, null);
+        String agentTrace = serializeAgentTrace(session.getId());
+        boolean firstExchange = chatSessionService.appendCompletedExchange(
+                userId, chatSessionId, userMessage, completeResponse, null, agentTrace);
         logger.info("对话已持久化到数据库，会话ID: {}", chatSessionId);
         if (!firstExchange) {
             return;
@@ -264,6 +326,47 @@ public class ChatHandler {
             session.sendMessage(new TextMessage(jsonChunk));
         } catch (Exception e) {
             logger.error("发送响应块失败: {}", e.getMessage(), e);
+        }
+    }
+
+    private void recordAndSendAgentEvent(WebSocketSession session, AgentEvent event) {
+        List<AgentEvent> events = agentEvents.get(session.getId());
+        if (events != null) {
+            synchronized (events) {
+                int existing = -1;
+                for (int i = 0; i < events.size(); i++) {
+                    if (events.get(i).stepId().equals(event.stepId())) {
+                        existing = i;
+                        break;
+                    }
+                }
+                if (existing >= 0) events.set(existing, event);
+                else events.add(event);
+            }
+        }
+        try {
+            session.sendMessage(new TextMessage(objectMapper.writeValueAsString(event)));
+        } catch (Exception e) {
+            logger.warn("发送 Agent 状态事件失败: {}", e.getMessage());
+        }
+    }
+
+    private String serializeAgentTrace(String websocketSessionId) {
+        List<AgentEvent> events = agentEvents.get(websocketSessionId);
+        if (events == null || events.isEmpty()) return null;
+        try {
+            List<Map<String, Object>> completed = new ArrayList<>();
+            synchronized (events) {
+                for (AgentEvent event : events) {
+                    Map<String, Object> item = objectMapper.convertValue(event, Map.class);
+                    if ("running".equals(item.get("status"))) item.put("status", "completed");
+                    completed.add(item);
+                }
+            }
+            return objectMapper.writeValueAsString(completed);
+        } catch (Exception e) {
+            logger.warn("序列化 Agent 执行轨迹失败: {}", e.getMessage());
+            return null;
         }
     }
 

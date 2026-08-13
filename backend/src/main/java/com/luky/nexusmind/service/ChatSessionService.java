@@ -99,10 +99,22 @@ public class ChatSessionService {
                                            String userMessage,
                                            String assistantResponse,
                                            String generatedTitle) {
+        return appendCompletedExchange(username, sessionId, userMessage, assistantResponse, generatedTitle, null);
+    }
+
+    @Transactional
+    public boolean appendCompletedExchange(String username,
+                                           Long sessionId,
+                                           String userMessage,
+                                           String assistantResponse,
+                                           String generatedTitle,
+                                           String agentTrace) {
         ChatSession session = getOwnedActiveSession(username, sessionId);
         boolean wasEmpty = !chatMessageRepository.existsBySessionId(session.getId());
         chatMessageRepository.save(newMessage(session, "user", userMessage, "finished"));
-        chatMessageRepository.save(newMessage(session, "assistant", assistantResponse, "finished"));
+        ChatMessage assistantMessage = newMessage(session, "assistant", assistantResponse, "finished");
+        assistantMessage.setAgentTrace(agentTrace);
+        chatMessageRepository.save(assistantMessage);
         if (wasEmpty) {
             session.setTitle(normalizeGeneratedTitle(generatedTitle, userMessage));
             session.setTitleGenerated(true);
