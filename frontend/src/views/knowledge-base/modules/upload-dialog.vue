@@ -7,12 +7,15 @@ import {
   textChunkSizeOptions,
   uploadAccept
 } from '@/constants/common';
+import { fetchGraphPromptTemplates } from '@/service/api';
 
 defineOptions({
   name: 'UploadDialog'
 });
 
 const loading = ref(false);
+const templateLoading = ref(false);
+const templates = ref<Api.GraphPromptTemplate.Item[]>([]);
 const visible = defineModel<boolean>('visible', { default: false });
 
 const authStore = useAuthStore();
@@ -24,6 +27,15 @@ const model = ref<Api.KnowledgeBase.Form>(createDefaultModel());
 const isPrivateSpace = computed(
   () => typeof model.value.orgTag === 'string' && model.value.orgTag.startsWith('PRIVATE_')
 );
+const templateOptions = computed(() =>
+  templates.value.filter(item => item.enabled).map(item => ({
+    label: `${item.name}${item.defaultTemplate ? '（默认）' : ''}`,
+    value: item.id
+  }))
+);
+const selectedTemplate = computed(() =>
+  templates.value.find(item => item.id === model.value.graphPromptTemplateId) || null
+);
 
 function createDefaultModel(): Api.KnowledgeBase.Form {
   return {
@@ -33,6 +45,7 @@ function createDefaultModel(): Api.KnowledgeBase.Form {
     parseEngine: 'AUTO',
     chunkSize: defaultTextChunkSize,
     graphEnabled: true,
+    graphPromptTemplateId: null,
     fileList: []
   };
 }
@@ -52,18 +65,42 @@ function close() {
 const store = useKnowledgeBaseStore();
 async function handleSubmit() {
   await validate();
+  if (model.value.graphEnabled && model.value.graphPromptTemplateId == null) {
+    window.$message?.warning('请选择图谱抽取模板');
+    return;
+  }
   loading.value = true;
   await store.enqueueUpload(model.value);
   loading.value = false;
   close();
 }
 
-watch(visible, () => {
+watch(visible, async () => {
   if (visible.value) {
     model.value = createDefaultModel();
     restoreValidation();
+    templateLoading.value = true;
+    const { data, error } = await fetchGraphPromptTemplates();
+    if (!error) {
+      templates.value = data || [];
+      model.value.graphPromptTemplateId = templates.value.find(item => item.defaultTemplate)?.id
+        || templates.value.find(item => item.enabled)?.id
+        || null;
+    }
+    templateLoading.value = false;
   }
 });
+
+watch(
+  () => model.value.graphEnabled,
+  enabled => {
+    if (enabled && model.value.graphPromptTemplateId == null) {
+      model.value.graphPromptTemplateId = templates.value.find(item => item.defaultTemplate)?.id
+        || templates.value.find(item => item.enabled)?.id
+        || null;
+    }
+  }
+);
 
 watch(
   () => model.value.orgTag,
@@ -128,6 +165,19 @@ function onUpdate(option: unknown) {
         </template>
         <NSwitch v-model:value="model.graphEnabled" />
         <NText depth="3" class="ml-10px">抽取关系，确认后写入对应组织图谱</NText>
+      </NFormItem>
+      <NFormItem v-if="model.graphEnabled" label="抽取模板">
+        <div class="min-w-0 flex-1">
+          <NSelect
+            v-model:value="model.graphPromptTemplateId"
+            :options="templateOptions"
+            :loading="templateLoading"
+            placeholder="请选择适合当前文档的模板"
+          />
+          <NText v-if="selectedTemplate?.description" depth="3" class="mt-5px block text-12px">
+            {{ selectedTemplate.description }}
+          </NText>
+        </div>
       </NFormItem>
       <NFormItem label="切片大小" path="chunkSize">
         <NSpace vertical :size="10">

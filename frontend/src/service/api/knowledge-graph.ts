@@ -21,18 +21,19 @@ export function publishDocumentGraph(fileMd5: string) {
   });
 }
 
-export function setDocumentGraphEnabled(fileMd5: string, enabled: boolean) {
+export function setDocumentGraphEnabled(fileMd5: string, enabled: boolean, templateId?: number | null) {
   return request<Api.KnowledgeGraph.DocumentGraph>({
     url: `/knowledge-graph/documents/${encodeURIComponent(fileMd5)}/enabled`,
     method: 'put',
-    data: { enabled }
+    data: { enabled, templateId }
   });
 }
 
-export function rebuildDocumentGraph(fileMd5: string) {
+export function rebuildDocumentGraph(fileMd5: string, templateId?: number | null) {
   return request<Api.KnowledgeGraph.DocumentGraph>({
     url: `/knowledge-graph/documents/${encodeURIComponent(fileMd5)}/rebuild`,
-    method: 'post'
+    method: 'post',
+    data: { templateId }
   });
 }
 

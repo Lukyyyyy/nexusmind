@@ -2,10 +2,12 @@
 import { fetchOrganizationGraph, fetchOrganizationGraphOptions } from '@/service/api';
 import SvgIcon from '@/components/custom/svg-icon.vue';
 import KnowledgeGraphCanvas from '@/views/knowledge-base/modules/knowledge-graph-canvas.vue';
+import GraphPromptTemplateCard from './modules/graph-prompt-template-card.vue';
 
 defineOptions({ name: 'OrganizationGraph' });
 
 const loading = ref(false);
+const activeSection = ref<'graph' | 'templates'>('graph');
 const organizations = ref<Api.KnowledgeGraph.OrganizationOption[]>([]);
 const selectedOrg = ref<string | null>(null);
 const keyword = ref('');
@@ -116,13 +118,21 @@ onMounted(async () => {
     <header class="page-heading">
       <div>
         <h1>组织知识图谱</h1>
-        <p>公开、组织内和私人图谱相互隔离，并保留每条关系的原文证据。</p>
+        <p v-if="activeSection === 'graph'">公开、组织内和私人图谱相互隔离，并保留每条关系的原文证据。</p>
+        <p v-else>按文档类型维护领域抽取要求，统一控制进入组织图谱的知识质量。</p>
       </div>
-      <NButton secondary :loading="loading" @click="refreshPage">
+      <NButton v-if="activeSection === 'graph'" secondary :loading="loading" @click="refreshPage">
         <template #icon><SvgIcon icon="mdi:refresh" /></template>
         刷新
       </NButton>
     </header>
+
+    <NTabs v-model:value="activeSection" type="line" animated class="section-tabs">
+      <NTab name="graph">图谱浏览</NTab>
+      <NTab name="templates">抽取模板</NTab>
+    </NTabs>
+
+    <div v-if="activeSection === 'graph'" class="graph-section">
 
     <div class="filter-rail">
       <NSelect
@@ -174,7 +184,10 @@ onMounted(async () => {
       </div>
       <div class="stat-item">
         <span class="stat-icon relation"><SvgIcon icon="solar:link-circle-line-duotone" /></span>
-        <div><small>关系</small><strong>{{ graph.stats.relationCount }}</strong></div>
+        <div>
+          <small>关系</small><strong>{{ graph.stats.relationCount }}</strong>
+          <em v-if="graph.stats.disputedRelationCount > 0">{{ graph.stats.disputedRelationCount }} 条存在不同陈述</em>
+        </div>
       </div>
       <div class="stat-item">
         <span class="stat-icon document"><SvgIcon icon="solar:documents-line-duotone" /></span>
@@ -185,7 +198,7 @@ onMounted(async () => {
       </div>
     </div>
 
-    <NSpin :show="loading">
+    <NSpin :show="loading" class="graph-spinner">
       <div v-if="graph" class="workspace-grid">
         <section class="canvas-panel">
           <KnowledgeGraphCanvas
@@ -203,22 +216,36 @@ onMounted(async () => {
             <div class="detail-kicker">关系详情</div>
             <h2>{{ selectedEdge.predicate }}</h2>
             <NText depth="3">
-              置信度 {{ Math.round(selectedEdge.confidence * 100) }}%
+              最高置信度 {{ Math.round(selectedEdge.confidence * 100) }}%
+              · {{ selectedEdge.documentCount }} 份文档的 {{ selectedEdge.supportCount }} 条证据
             </NText>
             <NDivider />
             <div class="evidence-route">
-              <span>{{ graph.nodes.find(node => node.id === selectedEdge?.source)?.name }}</span>
-              <SvgIcon icon="mdi:arrow-right" />
-              <span>{{ graph.nodes.find(node => node.id === selectedEdge?.target)?.name }}</span>
-            </div>
-            <h3>关系证据</h3>
-            <p class="evidence-text">{{ selectedEdge.evidenceText }}</p>
-            <div class="source-box">
-              <SvgIcon icon="solar:document-text-line-duotone" />
-              <div>
-                <strong>{{ selectedEdge.fileName }}</strong>
-                <small>切片 {{ selectedEdge.evidenceChunkId }}</small>
+              <div class="route-entity">
+                <small>起点</small>
+                <strong>{{ graph.nodes.find(node => node.id === selectedEdge?.source)?.name }}</strong>
               </div>
+              <span class="route-arrow"><SvgIcon icon="mdi:arrow-right" /></span>
+              <div class="route-entity">
+                <small>终点</small>
+                <strong>{{ graph.nodes.find(node => node.id === selectedEdge?.target)?.name }}</strong>
+              </div>
+            </div>
+            <NAlert v-if="selectedEdge.disputed" type="warning" class="mt-14px">
+              存在不同陈述：其他文档对同一实体和关系给出了不同对象，请结合来源和时间判断。
+            </NAlert>
+            <h3>来源证据</h3>
+            <div class="evidence-list">
+              <article v-for="evidence in selectedEdge.evidences" :key="evidence.claimId" class="evidence-card">
+                <p class="evidence-text">{{ evidence.evidenceText }}</p>
+                <div class="source-box">
+                  <SvgIcon icon="solar:document-text-line-duotone" />
+                  <div>
+                    <strong :title="evidence.fileName">{{ evidence.fileName }}</strong>
+                    <small>切片 {{ evidence.chunkId }} · 置信度 {{ Math.round(evidence.confidence * 100) }}%</small>
+                  </div>
+                </div>
+              </article>
             </div>
           </template>
 
@@ -252,12 +279,19 @@ onMounted(async () => {
       </div>
       <NEmpty v-else-if="organizations.length === 0" description="暂无可查看的组织文档图谱" class="empty-page" />
     </NSpin>
+    </div>
+
+    <GraphPromptTemplateCard v-else />
   </div>
 </template>
 
 <style scoped lang="scss">
 .organization-graph-page {
-  min-height: 100%;
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
   background: #fff;
 }
 
@@ -269,12 +303,30 @@ onMounted(async () => {
   margin-bottom: 18px;
 }
 
+.section-tabs { margin: -4px 0 16px; }
+
+.graph-section {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.graph-spinner {
+  min-height: 0;
+  flex: 1;
+}
+
+.graph-spinner :deep(.n-spin-content) {
+  height: 100%;
+  min-height: 0;
+}
+
 .page-heading h1 {
   margin: 0;
   color: #172033;
-  font-size: 24px;
+  font-size: 16px;
   font-weight: 650;
-  letter-spacing: -0.02em;
 }
 
 .page-heading p {
@@ -318,6 +370,7 @@ onMounted(async () => {
 
 .stat-item small, .source-box small { display: block; color: #788397; font-size: 12px; }
 .stat-item strong { display: block; margin-top: 2px; color: #172033; font-size: 23px; font-weight: 650; }
+.stat-item em { display: block; color: #d97706; font-size: 11px; font-style: normal; }
 .stat-icon { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 50%; font-size: 21px; }
 .stat-icon.entity { color: #245bdb; background: #eef3ff; }
 .stat-icon.relation { color: #5558c9; background: #ececfc; }
@@ -326,8 +379,11 @@ onMounted(async () => {
 
 .workspace-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 320px;
+  height: 100%;
+  min-height: 0;
+  grid-template-columns: minmax(0, 1fr) clamp(360px, 24vw, 420px);
   gap: 14px;
+  align-items: stretch;
 }
 
 .canvas-panel, .detail-panel {
@@ -337,23 +393,35 @@ onMounted(async () => {
   background: #fff;
 }
 
-.canvas-panel { overflow: hidden; }
+.canvas-panel { height: 100%; overflow: hidden; }
 .canvas-panel :deep(.graph-frame) { border: 0; border-radius: 0; box-shadow: none; }
-.canvas-panel :deep(.graph-canvas), .canvas-panel :deep(.graph-empty) { height: clamp(420px, calc(100vh - 450px), 640px); }
+.canvas-panel :deep(.graph-frame),
+.canvas-panel :deep(.graph-canvas),
+.canvas-panel :deep(.graph-empty) { height: 100%; min-height: 0; }
 
 .detail-panel {
-  min-height: 520px;
-  padding: 20px;
+  height: 100%;
+  min-height: 0;
+  padding: 22px;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 .detail-kicker { margin-bottom: 12px; color: #768196; font-size: 12px; font-weight: 600; }
 .detail-panel h2 { margin: 8px 0 4px; color: #182235; font-size: 20px; }
 .detail-panel h3 { margin: 18px 0 9px; color: #263247; font-size: 14px; }
-.evidence-route { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px; color: #354158; font-size: 13px; }
-.evidence-route span:last-child { text-align: right; }
+.evidence-route { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: stretch; gap: 10px; }
+.route-entity { min-width: 0; padding: 10px 12px; border: 1px solid #e7ebf0; border-radius: 5px; background: #fafbfd; }
+.route-entity small { display: block; margin-bottom: 4px; color: #8a95a7; font-size: 11px; }
+.route-entity strong { display: block; color: #354158; font-size: 13px; font-weight: 500; line-height: 1.5; overflow-wrap: anywhere; }
+.route-arrow { display: grid; place-items: center; color: #718096; }
 .evidence-text { margin: 0; padding: 12px; border-left: 3px solid #245bdb; background: #f5f7ff; color: #47546a; font-size: 13px; line-height: 1.7; }
+.evidence-list { display: flex; flex-direction: column; gap: 12px; }
+.evidence-card { min-width: 0; }
 .source-box { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding: 11px; border: 1px solid #e7ebf0; border-radius: 4px; color: #2680b8; }
-.source-box strong { display: block; overflow: hidden; color: #354158; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.source-box > :first-child { flex: 0 0 auto; }
+.source-box > div { min-width: 0; flex: 1; }
+.source-box strong { display: block; max-width: 100%; overflow: hidden; color: #354158; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 
 .relation-list { display: flex; flex-direction: column; gap: 7px; }
 .relation-row { width: 100%; padding: 10px; border: 1px solid #e8ecf1; border-radius: 4px; background: #fff; text-align: left; cursor: pointer; }
@@ -361,7 +429,7 @@ onMounted(async () => {
 .relation-row span, .relation-row small { display: block; }
 .relation-row span { color: #334056; font-size: 13px; }
 .relation-row small { margin-top: 3px; overflow: hidden; color: #8490a3; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.detail-empty { display: flex; height: 100%; min-height: 460px; align-items: center; justify-content: center; flex-direction: column; color: #9aa4b4; text-align: center; }
+.detail-empty { display: flex; height: 100%; min-height: 0; align-items: center; justify-content: center; flex-direction: column; color: #9aa4b4; text-align: center; }
 .detail-empty > :first-child { font-size: 38px; }
 .detail-empty h3 { margin: 14px 0 5px; }
 .detail-empty p { max-width: 230px; margin: 0; font-size: 12px; line-height: 1.7; }
@@ -374,12 +442,18 @@ onMounted(async () => {
 :global(html.dark) .canvas-panel, :global(html.dark) .detail-panel { border-color: #2d3748; background: #171e2a; }
 :global(html.dark) .stat-item { border-color: #2d3748; }
 :global(html.dark) .relation-row { border-color: #303b4b; background: #1b2431; }
+:global(html.dark) .route-entity { border-color: #303b4b; background: #1b2431; }
+:global(html.dark) .route-entity strong { color: #dce3ec; }
 
 @media (max-width: 1100px) {
+  .organization-graph-page { height: auto; min-height: 100%; overflow: visible; }
   .filter-rail { flex-wrap: wrap; }
   .source-select { flex: 1 1 280px; }
-  .workspace-grid { grid-template-columns: minmax(0, 1fr); }
-  .detail-panel { min-height: auto; }
+  .graph-section, .graph-spinner { flex: none; }
+  .graph-spinner :deep(.n-spin-content) { height: auto; }
+  .workspace-grid { height: auto; grid-template-columns: minmax(0, 1fr); }
+  .canvas-panel { height: 500px; }
+  .detail-panel { height: auto; min-height: auto; overflow-y: visible; }
   .detail-empty { min-height: 180px; }
 }
 
@@ -388,6 +462,6 @@ onMounted(async () => {
   .stat-strip { align-items: stretch; flex-wrap: wrap; }
   .stat-item { min-width: 33.333%; flex: 1; padding: 14px; }
   .stat-context { width: 100%; margin: 0; padding: 10px 14px; }
-  .canvas-panel :deep(.graph-canvas), .canvas-panel :deep(.graph-empty) { height: 500px; }
+  .canvas-panel { height: 500px; }
 }
 </style>

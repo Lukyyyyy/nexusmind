@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   fetchDocumentGraph,
+  fetchGraphPromptTemplates,
   publishDocumentGraph,
   rebuildDocumentGraph,
   setDocumentGraphEnabled,
@@ -18,6 +19,8 @@ const visible = defineModel<boolean>('visible', { default: false });
 const loading = ref(false);
 const saving = ref(false);
 const graph = ref<Api.KnowledgeGraph.DocumentGraph | null>(null);
+const templates = ref<Api.GraphPromptTemplate.Item[]>([]);
+const selectedTemplateId = ref<number | null>(null);
 const activeTab = ref<'review' | 'preview'>('review');
 const pollingStatuses = new Set<Api.KnowledgeGraph.Status>(['QUEUED', 'EXTRACTING']);
 let pollingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -31,7 +34,11 @@ const statusText: Record<Api.KnowledgeGraph.Status, string> = {
   FAILED: '抽取失败'
 };
 
-const pendingCandidates = computed(() => graph.value?.candidates.filter(item => item.status === 'PENDING') || []);
+const pendingCandidates = computed(() =>
+  (graph.value?.candidates.filter(item => item.status === 'PENDING') || [])
+    .slice()
+    .sort((left, right) => right.valueScore - left.valueScore || right.confidence - left.confidence)
+);
 const selectedCount = computed(() => pendingCandidates.value.filter(item => item.selected).length);
 const visualizedCandidates = computed(
   () => graph.value?.candidates.filter(item => item.status === 'PUBLISHED' || (item.status === 'PENDING' && item.selected)) || []
@@ -71,6 +78,12 @@ const previewGraph = computed(() => {
   });
   return { nodes: [...nodes.values()], edges };
 });
+const templateOptions = computed(() =>
+  templates.value.filter(item => item.enabled).map(item => ({
+    label: `${item.name}${item.defaultTemplate ? '（默认）' : ''}`,
+    value: item.id
+  }))
+);
 
 function graphNodeId(type: string, name: string) {
   const normalizedName = name.normalize('NFKC').trim().toLocaleLowerCase().replace(/[\s·•._\-—–]+/g, '');
@@ -84,6 +97,7 @@ async function load(showLoading = true) {
   if (!error) {
     const previousStatus = graph.value?.status;
     graph.value = data;
+    selectedTemplateId.value = data.templateId || templates.value.find(item => item.defaultTemplate)?.id || null;
     activeTab.value = data.status === 'PENDING_REVIEW' ? 'review' : 'preview';
     if (previousStatus && previousStatus !== data.status) emit('statusChange', data.status);
   }
@@ -141,7 +155,7 @@ async function publish() {
 
 async function setEnabled(enabled: boolean) {
   saving.value = true;
-  const { error } = await setDocumentGraphEnabled(props.fileMd5, enabled);
+  const { error } = await setDocumentGraphEnabled(props.fileMd5, enabled, selectedTemplateId.value);
   if (!error) {
     window.$message?.success(enabled ? '已开始构建知识图谱' : '知识图谱已停用');
     await load();
@@ -152,7 +166,7 @@ async function setEnabled(enabled: boolean) {
 
 async function rebuild() {
   saving.value = true;
-  const { error } = await rebuildDocumentGraph(props.fileMd5);
+  const { error } = await rebuildDocumentGraph(props.fileMd5, selectedTemplateId.value);
   if (!error) {
     window.$message?.success('已重新开始抽取');
     await load();
@@ -163,6 +177,8 @@ async function rebuild() {
 
 watch(visible, async value => {
   if (value) {
+    const { data } = await fetchGraphPromptTemplates();
+    templates.value = data || [];
     await load();
     syncPolling();
   } else {
@@ -201,7 +217,7 @@ onUnmounted(stopPolling);
             <NButton
               v-if="
                 graph.enabled &&
-                (['FAILED', 'PUBLISHED'].includes(graph.status) || (graph.status === 'PENDING_REVIEW' && graph.error))
+                ['FAILED', 'PENDING_REVIEW', 'PUBLISHED'].includes(graph.status)
               "
               :loading="saving"
               @click="rebuild"
@@ -211,9 +227,24 @@ onUnmounted(stopPolling);
             <NButton v-if="graph.enabled" type="error" ghost :loading="saving" @click="setEnabled(false)">停用</NButton>
           </NSpace>
         </div>
+        <div class="grid grid-cols-1 gap-8px rounded-6px bg-#f7f8fa p-12px md:grid-cols-[220px_1fr] md:items-center">
+          <div>
+            <div class="text-13px font-medium">图谱抽取模板</div>
+            <div class="mt-2px text-11px text-#8a8f99">重新抽取时按所选文档类型应用</div>
+          </div>
+          <NSelect
+            v-model:value="selectedTemplateId"
+            :options="templateOptions"
+            :disabled="pollingStatuses.has(graph.status)"
+            placeholder="选择抽取模板"
+          />
+        </div>
 
         <NTabs v-if="graph.candidates.length > 0" v-model:value="activeTab" type="line" animated>
           <NTabPane v-if="graph.status === 'PENDING_REVIEW'" name="review" tab="关系审核" display-directive="show:lazy">
+            <NAlert type="info" class="mb-12px">
+              实体名称作为组织图谱中的标准名称。同一实体的别名（如“知枢”与“NexusMind”）请改为同一标准名；同名的不同实体请使用可区分的标准名。系统仍会保留原文称呼作为别名和证据。
+            </NAlert>
             <div class="mb-12px flex items-center justify-between">
               <NText>AI 找到 {{ pendingCandidates.length }} 条关系，已选择 {{ selectedCount }} 条</NText>
               <NSpace>
@@ -238,7 +269,14 @@ onUnmounted(stopPolling);
                   <NInput v-model:value="candidate.objectType" size="small" @change="saveCandidate(candidate)" />
                 </div>
                 <div class="col-start-2 col-span-3 text-12px text-#737985">
-                  切片 {{ candidate.evidenceChunkId }} · 可信度 {{ Math.round(candidate.confidence * 100) }}% ·
+                  <span v-if="candidate.subjectMentionName && candidate.subjectMentionName !== candidate.subjectName">
+                    原文主体：{{ candidate.subjectMentionName }} ·
+                  </span>
+                  <span v-if="candidate.objectMentionName && candidate.objectMentionName !== candidate.objectName">
+                    原文客体：{{ candidate.objectMentionName }} ·
+                  </span>
+                  切片 {{ candidate.evidenceChunkId }} · 事实置信度 {{ Math.round(candidate.confidence * 100) }}% ·
+                  知识价值 {{ Math.round(candidate.valueScore * 100) }}% ·
                   {{ candidate.evidenceText }}
                 </div>
               </div>

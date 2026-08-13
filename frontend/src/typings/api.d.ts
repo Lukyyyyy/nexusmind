@@ -287,6 +287,7 @@ declare namespace Api {
       parseEngine: 'AUTO' | 'TIKA' | 'MINERU';
       chunkSize: number;
       graphEnabled: boolean;
+      graphPromptTemplateId: number | null;
       fileList: import('naive-ui').UploadFileInfo[];
     }
 
@@ -307,6 +308,7 @@ declare namespace Api {
       chunkSize?: number;
       actualChunkSize?: number | null;
       graphEnabled?: boolean;
+      graphPromptTemplateId?: number | null;
       graphStatus?: 'DISABLED' | 'QUEUED' | 'EXTRACTING' | 'PENDING_REVIEW' | 'PUBLISHED' | 'FAILED';
       graphError?: string | null;
       processingStage?: 'QUEUED' | 'PARSING' | 'CHUNKING' | 'VECTORIZING' | 'INDEXING' | 'COMPLETED' | 'FAILED';
@@ -404,13 +406,16 @@ declare namespace Api {
     interface Candidate {
       id: number;
       subjectName: string;
+      subjectMentionName?: string;
       subjectType: string;
       predicate: string;
       objectName: string;
+      objectMentionName?: string;
       objectType: string;
       evidenceChunkId: number;
       evidenceText: string;
       confidence: number;
+      valueScore: number;
       selected: boolean;
       status: CandidateStatus;
     }
@@ -420,6 +425,8 @@ declare namespace Api {
       enabled: boolean;
       status: Status;
       error: string | null;
+      templateId: number | null;
+      templateName: string;
       candidates: Candidate[];
       nodes: GraphNode[];
       edges: GraphEdge[];
@@ -442,6 +449,7 @@ declare namespace Api {
       evidenceChunkId: number;
       evidenceText: string;
       status: CandidateStatus;
+      disputed?: boolean;
     }
 
     interface CandidateUpdate {
@@ -494,6 +502,20 @@ declare namespace Api {
       fileUploadId: number;
       fileMd5: string;
       fileName: string;
+      supportCount: number;
+      documentCount: number;
+      disputed: boolean;
+      evidences: OrganizationGraphEvidence[];
+    }
+
+    interface OrganizationGraphEvidence {
+      claimId: number;
+      fileUploadId: number;
+      fileMd5: string;
+      fileName: string;
+      chunkId: number;
+      evidenceText: string;
+      confidence: number;
     }
 
     interface OrganizationDocument {
@@ -506,6 +528,28 @@ declare namespace Api {
       entityCount: number;
       relationCount: number;
       documentCount: number;
+      disputedRelationCount: number;
+    }
+  }
+
+  namespace GraphPromptTemplate {
+    interface Item {
+      id: number;
+      name: string;
+      documentType: string;
+      description: string | null;
+      instructions: string;
+      enabled: boolean;
+      defaultTemplate: boolean;
+      editable: boolean;
+    }
+    interface Request {
+      name: string;
+      documentType: string;
+      description?: string | null;
+      instructions: string;
+      enabled: boolean;
+      defaultTemplate: boolean;
     }
   }
 

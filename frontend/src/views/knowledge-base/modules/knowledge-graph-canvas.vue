@@ -179,8 +179,9 @@ function edgeStyle(datum: { data?: Record<string, unknown> }) {
   }
   const edge = datum.data as unknown as Api.KnowledgeGraph.GraphEdge;
   return {
-    stroke: themeStore.darkMode ? '#718096' : '#a5b1c1',
+    stroke: edge.disputed ? '#d97706' : themeStore.darkMode ? '#718096' : '#a5b1c1',
     lineWidth: selectedEdgeId.value === edge.id ? 3 : 1.5,
+    lineDash: edge.disputed ? [6, 4] : undefined,
     opacity: selectedEdgeId.value && selectedEdgeId.value !== edge.id ? 0.35 : 0.82,
     endArrow: true,
     endArrowSize: 8,

@@ -29,7 +29,8 @@ export const useKnowledgeBaseStore = defineStore(SetupStoreId.KnowledgeBase, () 
         fileName: task.fileName,
         orgTag: task.orgTag,
         isPublic: task.isPublic ?? false,
-        graphEnabled: task.graphEnabled ?? false
+        graphEnabled: task.graphEnabled ?? false,
+        graphPromptTemplateId: task.graphPromptTemplateId
       },
       headers: {
         'Content-Type': 'multipart/form-data',
@@ -118,6 +119,7 @@ export const useKnowledgeBaseStore = defineStore(SetupStoreId.KnowledgeBase, () 
       parseEngine: form.parseEngine,
       chunkSize: form.chunkSize,
       graphEnabled: form.graphEnabled,
+      graphPromptTemplateId: form.graphPromptTemplateId,
       uploadedChunks: [],
       progress: 0,
       status: UploadStatus.Pending,
