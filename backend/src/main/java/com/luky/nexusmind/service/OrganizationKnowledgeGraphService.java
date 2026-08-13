@@ -31,40 +31,32 @@ public class OrganizationKnowledgeGraphService {
 
     @Transactional(readOnly = true)
     public List<OrganizationOption> listOrganizations(String userId, String role) {
-        List<FileUpload> accessible = organizationFiles(documentService.getAccessibleFiles(userId, "", role));
-        Map<String, String> names = organizationTagRepository.findAll().stream()
-                .collect(Collectors.toMap(OrganizationTag::getTagId, OrganizationTag::getName, (left, right) -> left));
-
-        return accessible.stream()
-                .collect(Collectors.groupingBy(FileUpload::getOrgTag, LinkedHashMap::new, Collectors.toList()))
-                .entrySet().stream()
-                .map(entry -> new OrganizationOption(
-                        entry.getKey(),
-                        names.getOrDefault(entry.getKey(), entry.getKey()),
-                        entry.getValue().size(),
-                        entry.getValue().stream().filter(this::isPublished).count()
-                ))
-                .sorted(Comparator.comparing(OrganizationOption::name, String.CASE_INSENSITIVE_ORDER))
-                .toList();
+        return scopeSelections(userId, role).stream().map(OrganizationScopeSelection::option).toList();
     }
 
     @Transactional(readOnly = true)
-    public OrganizationGraphResponse getOrganizationGraph(String orgTag,
+    public OrganizationGraphResponse getOrganizationGraph(String requestedScope,
                                                            String userId,
                                                            String role,
                                                            String query,
                                                            String entityType,
                                                            Collection<Long> requestedFileIds,
                                                            Integer requestedLimit) {
-        List<FileUpload> accessibleOrgFiles = organizationFiles(documentService.getAccessibleFiles(userId, "", role))
-                .stream()
-                .filter(file -> Objects.equals(file.getOrgTag(), orgTag))
-                .toList();
-        if (accessibleOrgFiles.isEmpty()) {
+        List<OrganizationScopeSelection> selections = scopeSelections(userId, role);
+        OrganizationScopeSelection selection = selections.stream()
+                .filter(value -> value.scopeId().equals(requestedScope))
+                .findFirst()
+                // Keep the previous org-tag URL compatible: members get the internal graph,
+                // other users get the public graph when one exists.
+                .orElseGet(() -> selections.stream()
+                        .filter(value -> value.tagId().equals(requestedScope))
+                        .min(Comparator.comparingInt(value -> value.scopeType() == ScopeType.INTERNAL ? 0 : 1))
+                        .orElse(null));
+        if (selection == null) {
             throw new CustomException("无权访问该组织知识图谱", HttpStatus.FORBIDDEN);
         }
 
-        List<FileUpload> publishedFiles = accessibleOrgFiles.stream().filter(this::isPublished).toList();
+        List<FileUpload> publishedFiles = selection.files().stream().filter(this::isPublished).toList();
         Set<Long> requestedIds = requestedFileIds == null
                 ? Set.of()
                 : requestedFileIds.stream().filter(Objects::nonNull).collect(Collectors.toSet());
@@ -76,7 +68,7 @@ public class OrganizationKnowledgeGraphService {
                 ? DEFAULT_RELATION_LIMIT
                 : Math.min(Math.max(requestedLimit, 1), MAX_RELATION_LIMIT);
         List<KnowledgeGraphStoreService.OrganizationRelation> loaded = graphStoreService.loadOrganizationRelations(
-                orgTag,
+                queryScopeIds(selection),
                 selectedFiles.stream().map(FileUpload::getId).toList(),
                 query,
                 entityType,
@@ -103,17 +95,16 @@ public class OrganizationKnowledgeGraphService {
         List<GraphNode> graphNodes = nodes.values().stream().map(MutableNode::response).toList();
         List<String> entityTypes = graphNodes.stream().map(GraphNode::type).distinct().sorted().toList();
         Set<Long> contributingDocuments = edges.stream().map(GraphEdge::fileUploadId).collect(Collectors.toSet());
-        Map<String, String> orgNames = organizationTagRepository.findById(orgTag)
-                .map(tag -> Map.of(tag.getTagId(), tag.getName()))
-                .orElseGet(Map::of);
         List<DocumentOption> documents = publishedFiles.stream()
                 .sorted(Comparator.comparing(FileUpload::getFileName, String.CASE_INSENSITIVE_ORDER))
                 .map(file -> new DocumentOption(file.getId(), file.getFileMd5(), file.getFileName()))
                 .toList();
 
         return new OrganizationGraphResponse(
-                orgTag,
-                orgNames.getOrDefault(orgTag, orgTag),
+                selection.scopeId(),
+                selection.tagId(),
+                selection.name(),
+                selection.scopeType(),
                 graphNodes,
                 edges,
                 entityTypes,
@@ -124,21 +115,71 @@ public class OrganizationKnowledgeGraphService {
         );
     }
 
-    private List<FileUpload> organizationFiles(List<FileUpload> files) {
-        return files.stream()
-                .filter(file -> !file.isPublic())
-                .filter(file -> !DocumentPermissionPolicy.isPrivateOrgTag(file.getOrgTag()))
+    private List<OrganizationScopeSelection> scopeSelections(String userId, String role) {
+        List<FileUpload> accessible = documentService.getAccessibleFiles(userId, "", role).stream()
                 .filter(file -> file.getOrgTag() != null && !file.getOrgTag().isBlank())
                 .toList();
+        Set<String> memberships = "ADMIN".equals(role)
+                ? Set.of()
+                : new HashSet<>(documentService.getEffectiveOrganizationTags(userId));
+        Map<String, String> names = organizationTagRepository.findAll().stream()
+                .collect(Collectors.toMap(OrganizationTag::getTagId, OrganizationTag::getName, (left, right) -> left));
+        Map<String, MutableScope> scopes = new LinkedHashMap<>();
+
+        for (FileUpload file : accessible) {
+            String orgTag = file.getOrgTag();
+            String orgName = names.getOrDefault(orgTag, orgTag);
+            if (DocumentPermissionPolicy.isPrivateOrgTag(orgTag)) {
+                addScope(scopes, KnowledgeGraphStoreService.privateScope(orgTag), orgTag,
+                        orgName, ScopeType.PRIVATE, file);
+                continue;
+            }
+            if (file.isPublic()) {
+                addScope(scopes, KnowledgeGraphStoreService.publicOrganizationScope(orgTag), orgTag,
+                        orgName, ScopeType.PUBLIC, file);
+            }
+            if ("ADMIN".equals(role) || memberships.contains(orgTag)) {
+                addScope(scopes, KnowledgeGraphStoreService.internalOrganizationScope(orgTag), orgTag,
+                        orgName, ScopeType.INTERNAL, file);
+            }
+        }
+
+        return scopes.values().stream()
+                .map(MutableScope::selection)
+                .sorted(Comparator.comparing(OrganizationScopeSelection::name, String.CASE_INSENSITIVE_ORDER)
+                        .thenComparing(OrganizationScopeSelection::scopeType))
+                .toList();
+    }
+
+    private void addScope(Map<String, MutableScope> scopes, String scopeId, String tagId,
+                          String name, ScopeType scopeType, FileUpload file) {
+        scopes.computeIfAbsent(scopeId, ignored -> new MutableScope(scopeId, tagId, name, scopeType)).files.add(file);
+    }
+
+    private List<String> queryScopeIds(OrganizationScopeSelection selection) {
+        return switch (selection.scopeType()) {
+            case PUBLIC -> List.of(selection.scopeId(), "PUBLIC");
+            case INTERNAL -> List.of(selection.scopeId(), "ORG:" + selection.tagId(), "PUBLIC");
+            case PRIVATE -> {
+                List<String> scopeIds = new ArrayList<>();
+                scopeIds.add(selection.scopeId());
+                selection.files().stream().map(FileUpload::getUserId).filter(Objects::nonNull).distinct()
+                        .map(ownerId -> "USER:" + ownerId).forEach(scopeIds::add);
+                yield scopeIds;
+            }
+        };
     }
 
     private boolean isPublished(FileUpload file) {
         return file.isGraphEnabled() && file.getGraphStatus() == KnowledgeGraphStatus.PUBLISHED;
     }
 
-    public record OrganizationOption(String tagId, String name, int documentCount, long publishedDocumentCount) {}
+    public enum ScopeType { PUBLIC, INTERNAL, PRIVATE }
 
-    public record OrganizationGraphResponse(String orgTag, String orgName,
+    public record OrganizationOption(String scopeId, String tagId, String name, ScopeType scopeType,
+                                     int documentCount, long publishedDocumentCount) {}
+
+    public record OrganizationGraphResponse(String scopeId, String orgTag, String orgName, ScopeType scopeType,
                                             List<GraphNode> nodes, List<GraphEdge> edges,
                                             List<String> entityTypes, List<DocumentOption> documents,
                                             GraphStats stats, boolean truncated, boolean neo4jEnabled) {}
@@ -152,6 +193,34 @@ public class OrganizationKnowledgeGraphService {
     public record DocumentOption(Long id, String fileMd5, String fileName) {}
 
     public record GraphStats(int entityCount, int relationCount, int documentCount) {}
+
+    private record OrganizationScopeSelection(String scopeId, String tagId, String name, ScopeType scopeType,
+                                              List<FileUpload> files) {
+        private OrganizationOption option() {
+            return new OrganizationOption(scopeId, tagId, name, scopeType, files.size(),
+                    files.stream().filter(file -> file.isGraphEnabled()
+                            && file.getGraphStatus() == KnowledgeGraphStatus.PUBLISHED).count());
+        }
+    }
+
+    private static final class MutableScope {
+        private final String scopeId;
+        private final String tagId;
+        private final String name;
+        private final ScopeType scopeType;
+        private final List<FileUpload> files = new ArrayList<>();
+
+        private MutableScope(String scopeId, String tagId, String name, ScopeType scopeType) {
+            this.scopeId = scopeId;
+            this.tagId = tagId;
+            this.name = name;
+            this.scopeType = scopeType;
+        }
+
+        private OrganizationScopeSelection selection() {
+            return new OrganizationScopeSelection(scopeId, tagId, name, scopeType, List.copyOf(files));
+        }
+    }
 
     private static final class MutableNode {
         private final String id;

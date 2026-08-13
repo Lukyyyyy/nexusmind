@@ -17,10 +17,16 @@ const selectedEdge = ref<Api.KnowledgeGraph.OrganizationGraphEdge | null>(null);
 
 const organizationOptions = computed(() =>
   organizations.value.map(item => ({
-    label: `${item.name}（${item.publishedDocumentCount} 份已发布）`,
-    value: item.tagId
+    label: `${item.name} · ${scopeTypeLabel(item.scopeType)}（${item.publishedDocumentCount} 份已发布）`,
+    value: item.scopeId
   }))
 );
+
+function scopeTypeLabel(scopeType: Api.KnowledgeGraph.OrganizationOption['scopeType']) {
+  if (scopeType === 'PUBLIC') return '公开图谱';
+  if (scopeType === 'PRIVATE') return '私人图谱';
+  return '组织内图谱';
+}
 const typeOptions = computed(() =>
   (graph.value?.entityTypes || []).map(type => ({ label: type, value: type }))
 );
@@ -64,6 +70,12 @@ async function loadGraph() {
   loading.value = false;
 }
 
+async function refreshPage() {
+  const previousScope = selectedOrg.value;
+  await loadOrganizations();
+  if (selectedOrg.value && selectedOrg.value === previousScope) await loadGraph();
+}
+
 function resetFilters() {
   keyword.value = '';
   selectedType.value = null;
@@ -95,8 +107,7 @@ watch(selectedOrg, async (value, previous) => {
 });
 
 onMounted(async () => {
-  await loadOrganizations();
-  if (selectedOrg.value) await loadGraph();
+  await refreshPage();
 });
 </script>
 
@@ -105,9 +116,9 @@ onMounted(async () => {
     <header class="page-heading">
       <div>
         <h1>组织知识图谱</h1>
-        <p>汇聚组织内已发布文档的实体关系，并保留每条关系的原文证据。</p>
+        <p>公开、组织内和私人图谱相互隔离，并保留每条关系的原文证据。</p>
       </div>
-      <NButton secondary :loading="loading" @click="loadGraph">
+      <NButton secondary :loading="loading" @click="refreshPage">
         <template #icon><SvgIcon icon="mdi:refresh" /></template>
         刷新
       </NButton>
@@ -170,7 +181,7 @@ onMounted(async () => {
         <div><small>来源文档</small><strong>{{ graph.stats.documentCount }}</strong></div>
       </div>
       <div class="stat-context">
-        当前范围：{{ graph.orgName }}
+        当前范围：{{ graph.orgName }} · {{ scopeTypeLabel(graph.scopeType) }}
       </div>
     </div>
 

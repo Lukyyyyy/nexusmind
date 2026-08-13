@@ -28,8 +28,8 @@ public class KnowledgeGraphController {
         return ok(organizationGraphService.listOrganizations(userId, role));
     }
 
-    @GetMapping("/organizations/{orgTag}")
-    public ResponseEntity<?> organizationGraph(@PathVariable String orgTag,
+    @GetMapping("/organizations/{scopeId}")
+    public ResponseEntity<?> organizationGraph(@PathVariable String scopeId,
                                                @RequestAttribute("userId") String userId,
                                                @RequestAttribute("role") String role,
                                                @RequestParam(required = false) String query,
@@ -37,7 +37,7 @@ public class KnowledgeGraphController {
                                                @RequestParam(required = false) List<Long> fileIds,
                                                @RequestParam(required = false) Integer limit) {
         return ok(organizationGraphService.getOrganizationGraph(
-                orgTag, userId, role, query, entityType, fileIds, limit));
+                scopeId, userId, role, query, entityType, fileIds, limit));
     }
 
     @GetMapping("/documents/{fileMd5}")

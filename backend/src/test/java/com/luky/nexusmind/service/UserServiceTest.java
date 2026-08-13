@@ -137,6 +137,26 @@ class UserServiceTest {
         assertEquals(List.of("PRIVATE_jack", "default"), details.stream().map(tag -> tag.get("tagId")).toList());
     }
 
+    @Test
+    void assigningOrganizationInvalidatesEffectiveMembershipImmediately() {
+        OrganizationTag engineering = existingTag("engineering", "研发部");
+        organizationTags.save(engineering);
+        User admin = new User();
+        admin.setUsername("admin");
+        admin.setRole(User.Role.ADMIN);
+        users.save(admin);
+        User jack = new User();
+        jack.setUsername("jack");
+        jack.setRole(User.Role.USER);
+        jack.setOrgTags("PRIVATE_jack");
+        users.save(jack);
+
+        userService.assignOrgTagsToUser(jack.getId(), List.of("engineering"), "admin");
+
+        assertTrue(List.of(jack.getOrgTags().split(",")).contains("engineering"));
+        assertTrue(cache.invalidatedEffectiveTags.contains("jack"));
+    }
+
     private static OrganizationTag existingTag(String tagId, String name) {
         OrganizationTag tag = new OrganizationTag();
         tag.setTagId(tagId);
@@ -148,6 +168,7 @@ class UserServiceTest {
     private static class RecordingOrgTagCacheService extends OrgTagCacheService {
         private final Map<String, List<String>> cachedOrgTags = new HashMap<>();
         private final Map<String, String> cachedPrimaryOrg = new HashMap<>();
+        private final List<String> invalidatedEffectiveTags = new ArrayList<>();
 
         @Override
         public void cacheUserOrgTags(String username, List<String> orgTags) {
@@ -165,13 +186,18 @@ class UserServiceTest {
         }
 
         @Override
+        public void deleteUserOrgTagsCache(String username) {
+            cachedOrgTags.remove(username);
+        }
+
+        @Override
         public String getUserPrimaryOrg(String username) {
             return cachedPrimaryOrg.get(username);
         }
 
         @Override
         public void deleteUserEffectiveTagsCache(String username) {
-            // No Redis in this unit test.
+            invalidatedEffectiveTags.add(username);
         }
     }
 
@@ -182,6 +208,8 @@ class UserServiceTest {
         UserRepository proxy() {
             return UserServiceTest.proxy(UserRepository.class, (proxy, method, args) -> switch (method.getName()) {
                 case "findByUsername" -> findByUsername((String) args[0]);
+                case "findById" -> byUsername.values().stream()
+                        .filter(user -> user.getId().equals(args[0])).findFirst();
                 case "findAll" -> new ArrayList<>(byUsername.values());
                 case "save" -> save((User) args[0]);
                 default -> defaultValue(method.getReturnType());

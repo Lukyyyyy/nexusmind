@@ -43,11 +43,11 @@ export function fetchOrganizationGraphOptions() {
 }
 
 export function fetchOrganizationGraph(
-  orgTag: string,
+  scopeId: string,
   params?: Api.KnowledgeGraph.OrganizationGraphQuery
 ) {
   return request<Api.KnowledgeGraph.OrganizationGraph>({
-    url: `/knowledge-graph/organizations/${encodeURIComponent(orgTag)}`,
+    url: `/knowledge-graph/organizations/${encodeURIComponent(scopeId)}`,
     params
   });
 }

@@ -454,8 +454,10 @@ declare namespace Api {
     }
 
     interface OrganizationOption {
+      scopeId: string;
       tagId: string;
       name: string;
+      scopeType: 'PUBLIC' | 'INTERNAL' | 'PRIVATE';
       documentCount: number;
       publishedDocumentCount: number;
     }
@@ -468,8 +470,10 @@ declare namespace Api {
     }
 
     interface OrganizationGraph {
+      scopeId: string;
       orgTag: string;
       orgName: string;
+      scopeType: 'PUBLIC' | 'INTERNAL' | 'PRIVATE';
       nodes: GraphNode[];
       edges: OrganizationGraphEdge[];
       entityTypes: string[];

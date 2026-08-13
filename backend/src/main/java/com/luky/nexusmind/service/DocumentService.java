@@ -201,6 +201,17 @@ public class DocumentService {
         }
     }
 
+    /**
+     * Returns current organization memberships from the authoritative user/cache path.
+     * This deliberately does not use JWT claims so administrator membership changes
+     * take effect for organization graph access immediately.
+     */
+    public List<String> getEffectiveOrganizationTags(String userId) {
+        User user = findUserByIdentifier(userId)
+                .orElseThrow(() -> new RuntimeException("用户不存在: " + userId));
+        return withDefaultOrgAliases(orgTagCacheService.getUserEffectiveOrgTags(user.getUsername()));
+    }
+
     private Optional<User> findUserByIdentifier(String identifier) {
         if (identifier == null || identifier.isBlank()) {
             return Optional.empty();

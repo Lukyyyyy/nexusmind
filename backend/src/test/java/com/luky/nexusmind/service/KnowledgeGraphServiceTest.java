@@ -59,9 +59,10 @@ class KnowledgeGraphServiceTest {
         FileUpload organizationFile = file("jack", "研发部", false);
         FileUpload privateFile = file("jack", "PRIVATE_Jack", false);
 
-        assertEquals("PUBLIC", KnowledgeGraphStoreService.scopeId(publicFile));
-        assertEquals("ORG:研发部", KnowledgeGraphStoreService.scopeId(organizationFile));
-        assertEquals("USER:jack", KnowledgeGraphStoreService.scopeId(privateFile));
+        assertEquals(List.of("ORG_PUBLIC:default", "ORG_INTERNAL:default"),
+                KnowledgeGraphStoreService.scopeIds(publicFile));
+        assertEquals(List.of("ORG_INTERNAL:研发部"), KnowledgeGraphStoreService.scopeIds(organizationFile));
+        assertEquals(List.of("PRIVATE:Jack"), KnowledgeGraphStoreService.scopeIds(privateFile));
     }
 
     private GraphCandidate candidate(long id, boolean selected) {

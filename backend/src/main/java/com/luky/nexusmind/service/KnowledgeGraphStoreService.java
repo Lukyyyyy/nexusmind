@@ -36,45 +36,52 @@ public class KnowledgeGraphStoreService {
 
     public void publish(FileUpload file, List<GraphCandidate> candidates) {
         Driver driver = requireDriver();
-        String scopeId = scopeId(file);
+        List<String> scopeIds = scopeIds(file);
         try {
             driver.verifyConnectivity();
             try (Session session = driver.session()) {
                 session.executeWrite(tx -> {
                     tx.run("MATCH ()-[r:RELATED {fileUploadId: $fileUploadId}]->() DELETE r",
                             Values.parameters("fileUploadId", file.getId())).consume();
-                    for (GraphCandidate candidate : candidates) {
-                        Map<String, Object> params = new HashMap<>();
-                        params.put("subjectKey", entityKey(scopeId, candidate.getSubjectType(), candidate.getSubjectName()));
-                        params.put("subjectName", candidate.getSubjectName());
-                        params.put("subjectType", normalizeType(candidate.getSubjectType()));
-                        params.put("objectKey", entityKey(scopeId, candidate.getObjectType(), candidate.getObjectName()));
-                        params.put("objectName", candidate.getObjectName());
-                        params.put("objectType", normalizeType(candidate.getObjectType()));
-                        params.put("scopeId", scopeId);
-                        params.put("candidateId", candidate.getId());
-                        params.put("predicate", candidate.getPredicate());
-                        params.put("fileUploadId", file.getId());
-                        params.put("fileMd5", file.getFileMd5());
-                        params.put("fileName", file.getFileName());
-                        params.put("chunkId", candidate.getEvidenceChunkId());
-                        params.put("evidence", candidate.getEvidenceText());
-                        params.put("confidence", candidate.getConfidence() == null ? 0.0 : candidate.getConfidence());
-                        tx.run("""
+                    for (int scopeIndex = 0; scopeIndex < scopeIds.size(); scopeIndex++) {
+                        String scopeId = scopeIds.get(scopeIndex);
+                        for (GraphCandidate candidate : candidates) {
+                            Map<String, Object> params = new HashMap<>();
+                            params.put("subjectKey", entityKey(scopeId, candidate.getSubjectType(), candidate.getSubjectName()));
+                            params.put("subjectName", candidate.getSubjectName());
+                            params.put("subjectType", normalizeType(candidate.getSubjectType()));
+                            params.put("objectKey", entityKey(scopeId, candidate.getObjectType(), candidate.getObjectName()));
+                            params.put("objectName", candidate.getObjectName());
+                            params.put("objectType", normalizeType(candidate.getObjectType()));
+                            params.put("scopeId", scopeId);
+                            // Question answering reads one canonical copy per document. For public
+                            // documents the internal copy is canonical so organization members can
+                            // still traverse paths between public and organization-only documents.
+                            params.put("primaryScope", scopeIndex == scopeIds.size() - 1);
+                            params.put("candidateId", candidate.getId());
+                            params.put("predicate", candidate.getPredicate());
+                            params.put("fileUploadId", file.getId());
+                            params.put("fileMd5", file.getFileMd5());
+                            params.put("fileName", file.getFileName());
+                            params.put("chunkId", candidate.getEvidenceChunkId());
+                            params.put("evidence", candidate.getEvidenceText());
+                            params.put("confidence", candidate.getConfidence() == null ? 0.0 : candidate.getConfidence());
+                            tx.run("""
                                 MERGE (s:Entity {key: $subjectKey})
                                 SET s.name = $subjectName, s.type = $subjectType, s.scopeId = $scopeId
                                 MERGE (o:Entity {key: $objectKey})
                                 SET o.name = $objectName, o.type = $objectType, o.scopeId = $scopeId
-                                MERGE (s)-[r:RELATED {candidateId: $candidateId}]->(o)
+                                MERGE (s)-[r:RELATED {candidateId: $candidateId, scopeId: $scopeId}]->(o)
                                 SET r.predicate = $predicate,
                                     r.fileUploadId = $fileUploadId,
                                     r.fileMd5 = $fileMd5,
                                     r.fileName = $fileName,
-                                    r.scopeId = $scopeId,
+                                    r.primaryScope = $primaryScope,
                                     r.chunkId = $chunkId,
                                     r.evidence = $evidence,
                                     r.confidence = $confidence
                                 """, params).consume();
+                        }
                     }
                     tx.run("MATCH (n:Entity) WHERE NOT (n)--() DELETE n").consume();
                     return null;
@@ -108,7 +115,8 @@ public class KnowledgeGraphStoreService {
         try (Session session = driver.session()) {
             return session.executeRead(tx -> tx.run("""
                     MATCH p=(start:Entity)-[rels:RELATED*1..2]-(end:Entity)
-                    WHERE ALL(r IN rels WHERE r.fileUploadId IN $fileIds)
+                    WHERE ALL(r IN rels WHERE r.fileUploadId IN $fileIds
+                              AND coalesce(r.primaryScope, true) = true)
                       AND ALL(n IN nodes(p) WHERE size(n.name) >= 2)
                       AND ANY(n IN nodes(p) WHERE toLower(n.name) CONTAINS toLower($query)
                            OR toLower($query) CONTAINS toLower(n.name))
@@ -127,13 +135,14 @@ public class KnowledgeGraphStoreService {
         }
     }
 
-    public List<OrganizationRelation> loadOrganizationRelations(String orgTag,
+    public List<OrganizationRelation> loadOrganizationRelations(Collection<String> scopeIds,
                                                                  Collection<Long> accessibleFileIds,
                                                                  String query,
                                                                  String entityType,
                                                                  int limit) {
         Driver driver = driverProvider.getIfAvailable();
-        if (driver == null || accessibleFileIds == null || accessibleFileIds.isEmpty()) return List.of();
+        if (driver == null || scopeIds == null || scopeIds.isEmpty()
+                || accessibleFileIds == null || accessibleFileIds.isEmpty()) return List.of();
         List<Long> ids = accessibleFileIds.stream().filter(Objects::nonNull).distinct().toList();
         String normalizedQuery = Objects.toString(query, "").trim();
         String normalizedEntityType = Objects.toString(entityType, "").trim().toUpperCase(Locale.ROOT);
@@ -141,7 +150,7 @@ public class KnowledgeGraphStoreService {
         try (Session session = driver.session()) {
             return session.executeRead(tx -> tx.run("""
                     MATCH (s:Entity)-[r:RELATED]->(o:Entity)
-                    WHERE r.scopeId = $scopeId
+                    WHERE r.scopeId IN $scopeIds
                       AND r.fileUploadId IN $fileIds
                       AND ($query = '' OR toLower(s.name) CONTAINS toLower($query)
                            OR toLower(o.name) CONTAINS toLower($query)
@@ -157,7 +166,7 @@ public class KnowledgeGraphStoreService {
                     ORDER BY r.confidence DESC, r.candidateId ASC
                     LIMIT $limit
                     """, Values.parameters(
-                            "scopeId", "ORG:" + Objects.toString(orgTag, "default"),
+                            "scopeIds", scopeIds.stream().filter(Objects::nonNull).distinct().toList(),
                             "fileIds", ids,
                             "query", normalizedQuery,
                             "entityType", normalizedEntityType,
@@ -179,7 +188,7 @@ public class KnowledgeGraphStoreService {
                             record.get("confidence").isNull() ? 0.0 : record.get("confidence").asDouble()
                     )));
         } catch (RuntimeException e) {
-            logger.warn("组织图谱查询不可用，orgTag={}: {}", orgTag, e.getMessage());
+            logger.warn("组织图谱查询不可用，scopeIds={}: {}", scopeIds, e.getMessage());
             return List.of();
         }
     }
@@ -198,10 +207,31 @@ public class KnowledgeGraphStoreService {
         return driver;
     }
 
-    static String scopeId(FileUpload file) {
-        if (DocumentPermissionPolicy.isPrivateOrgTag(file.getOrgTag())) return "USER:" + file.getUserId();
-        if (file.isPublic()) return "PUBLIC";
-        return "ORG:" + Objects.toString(file.getOrgTag(), "default");
+    static List<String> scopeIds(FileUpload file) {
+        if (DocumentPermissionPolicy.isPrivateOrgTag(file.getOrgTag())) {
+            return List.of(privateScope(file.getOrgTag()));
+        }
+        String orgTag = Objects.toString(file.getOrgTag(), "default");
+        if (file.isPublic()) {
+            return List.of(publicOrganizationScope(orgTag), internalOrganizationScope(orgTag));
+        }
+        return List.of(internalOrganizationScope(orgTag));
+    }
+
+    static String publicOrganizationScope(String orgTag) {
+        return "ORG_PUBLIC:" + Objects.toString(orgTag, "default");
+    }
+
+    static String internalOrganizationScope(String orgTag) {
+        return "ORG_INTERNAL:" + Objects.toString(orgTag, "default");
+    }
+
+    static String privateScope(String privateOrgTag) {
+        String value = Objects.toString(privateOrgTag, "");
+        if (DocumentPermissionPolicy.isPrivateOrgTag(value)) {
+            value = value.substring(DocumentPermissionPolicy.PRIVATE_TAG_PREFIX.length());
+        }
+        return "PRIVATE:" + value;
     }
 
     private String entityKey(String scopeId, String type, String name) {

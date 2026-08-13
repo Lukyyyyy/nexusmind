@@ -8,7 +8,6 @@ import com.luky.nexusmind.repository.OrganizationTagRepository;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
-import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -25,9 +24,12 @@ class OrganizationKnowledgeGraphServiceTest {
         FileUpload pending = file(8L, "研发部", false, true, KnowledgeGraphStatus.PENDING_REVIEW);
         FileUpload publicFile = file(9L, "研发部", true, true, KnowledgeGraphStatus.PUBLISHED);
         when(documents.getAccessibleFiles("jack", "", "USER")).thenReturn(List.of(published, pending, publicFile));
-        when(organizations.findById("研发部")).thenReturn(Optional.empty());
+        when(documents.getEffectiveOrganizationTags("jack")).thenReturn(List.of("研发部"));
+        when(organizations.findAll()).thenReturn(List.of());
         when(store.isEnabled()).thenReturn(true);
-        when(store.loadOrganizationRelations("研发部", List.of(7L), "订单", "SYSTEM", 301))
+        when(store.loadOrganizationRelations(
+                List.of("ORG_INTERNAL:研发部", "ORG:研发部", "PUBLIC"),
+                List.of(7L, 9L), "订单", "SYSTEM", 301))
                 .thenReturn(List.of(new KnowledgeGraphStoreService.OrganizationRelation(
                         "ORG:研发部|SYSTEM|订单系统", "订单系统", "SYSTEM",
                         "ORG:研发部|SERVICE|redis", "Redis", "SERVICE",
@@ -36,13 +38,13 @@ class OrganizationKnowledgeGraphServiceTest {
                 )));
 
         OrganizationKnowledgeGraphService.OrganizationGraphResponse response = service.getOrganizationGraph(
-                "研发部", "jack", "USER", "订单", "SYSTEM", null, null);
+                "ORG_INTERNAL:研发部", "jack", "USER", "订单", "SYSTEM", null, null);
 
         assertEquals(2, response.nodes().size());
         assertEquals(1, response.edges().size());
         assertEquals("架构说明.pdf", response.edges().get(0).fileName());
         assertEquals("订单系统依赖 Redis", response.edges().get(0).evidenceText());
-        assertEquals(1, response.documents().size());
+        assertEquals(2, response.documents().size());
         assertEquals(1, response.stats().documentCount());
         assertTrue(response.neo4jEnabled());
     }
@@ -54,10 +56,54 @@ class OrganizationKnowledgeGraphServiceTest {
         KnowledgeGraphStoreService store = mock(KnowledgeGraphStoreService.class);
         OrganizationKnowledgeGraphService service = new OrganizationKnowledgeGraphService(documents, organizations, store);
         when(documents.getAccessibleFiles("jack", "", "USER")).thenReturn(List.of());
+        when(documents.getEffectiveOrganizationTags("jack")).thenReturn(List.of());
+        when(organizations.findAll()).thenReturn(List.of());
 
         assertThrows(CustomException.class, () -> service.getOrganizationGraph(
                 "财务部", "jack", "USER", "", "", null, 100));
         verifyNoInteractions(store);
+    }
+
+    @Test
+    void refreshesInternalGraphAccessAfterMembershipChanges() {
+        DocumentService documents = mock(DocumentService.class);
+        OrganizationTagRepository organizations = mock(OrganizationTagRepository.class);
+        KnowledgeGraphStoreService store = mock(KnowledgeGraphStoreService.class);
+        OrganizationKnowledgeGraphService service = new OrganizationKnowledgeGraphService(documents, organizations, store);
+        FileUpload publicFile = file(9L, "研发部", true, true, KnowledgeGraphStatus.PUBLISHED);
+        FileUpload internalFile = file(10L, "研发部", false, true, KnowledgeGraphStatus.PUBLISHED);
+        when(documents.getAccessibleFiles("jack", "", "USER"))
+                .thenReturn(List.of(publicFile, internalFile));
+        when(documents.getEffectiveOrganizationTags("jack"))
+                .thenReturn(List.of(), List.of("研发部"));
+        when(organizations.findAll()).thenReturn(List.of());
+
+        List<OrganizationKnowledgeGraphService.OrganizationOption> before = service.listOrganizations("jack", "USER");
+        List<OrganizationKnowledgeGraphService.OrganizationOption> after = service.listOrganizations("jack", "USER");
+
+        assertEquals(List.of("ORG_PUBLIC:研发部"), before.stream().map(
+                OrganizationKnowledgeGraphService.OrganizationOption::scopeId).toList());
+        assertEquals(List.of("ORG_PUBLIC:研发部", "ORG_INTERNAL:研发部"), after.stream().map(
+                OrganizationKnowledgeGraphService.OrganizationOption::scopeId).toList());
+        verify(documents, times(2)).getEffectiveOrganizationTags("jack");
+    }
+
+    @Test
+    void exposesPrivateSpaceAsItsOwnGraph() {
+        DocumentService documents = mock(DocumentService.class);
+        OrganizationTagRepository organizations = mock(OrganizationTagRepository.class);
+        KnowledgeGraphStoreService store = mock(KnowledgeGraphStoreService.class);
+        OrganizationKnowledgeGraphService service = new OrganizationKnowledgeGraphService(documents, organizations, store);
+        FileUpload privateFile = file(11L, "PRIVATE_jack", false, true, KnowledgeGraphStatus.PUBLISHED);
+        when(documents.getAccessibleFiles("jack", "", "USER")).thenReturn(List.of(privateFile));
+        when(documents.getEffectiveOrganizationTags("jack")).thenReturn(List.of("PRIVATE_jack"));
+        when(organizations.findAll()).thenReturn(List.of());
+
+        List<OrganizationKnowledgeGraphService.OrganizationOption> options = service.listOrganizations("jack", "USER");
+
+        assertEquals(1, options.size());
+        assertEquals("PRIVATE:jack", options.get(0).scopeId());
+        assertEquals(OrganizationKnowledgeGraphService.ScopeType.PRIVATE, options.get(0).scopeType());
     }
 
     private FileUpload file(Long id, String orgTag, boolean isPublic, boolean graphEnabled,
