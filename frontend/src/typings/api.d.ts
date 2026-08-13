@@ -506,6 +506,19 @@ declare namespace Api {
   }
 
   namespace Chat {
+    interface AgentStep {
+      type: 'agent_step';
+      stepId: string;
+      category: 'thinking' | 'tool' | 'answer';
+      status: 'running' | 'completed' | 'error';
+      title: string;
+      detail: string;
+      tool?: string | null;
+      input?: Record<string, string | number> | null;
+      resultCount?: number | null;
+      durationMs?: number | null;
+    }
+
     interface Input {
       message: string;
       conversationId?: string;
@@ -547,6 +560,7 @@ declare namespace Api {
       content: string;
       status?: 'pending' | 'loading' | 'finished' | 'error';
       timestamp?: string;
+      agentTrace?: AgentStep[] | string | null;
     }
 
     interface Token {

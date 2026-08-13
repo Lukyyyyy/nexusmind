@@ -24,6 +24,15 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
 
   const activeSession = computed(() => sessions.value.find(item => item.id === activeSessionId.value) || null);
 
+  function normalizeMessage(message: Api.Chat.Message): Api.Chat.Message {
+    if (typeof message.agentTrace !== 'string') return message;
+    try {
+      return { ...message, agentTrace: JSON.parse(message.agentTrace) as Api.Chat.AgentStep[] };
+    } catch {
+      return { ...message, agentTrace: [] };
+    }
+  }
+
   async function loadSessions() {
     sessionLoading.value = true;
     const { error, data } = await request<Api.Chat.Session[]>({ url: 'chat/sessions' });
@@ -56,7 +65,7 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
     loading.value = true;
     const { error, data } = await request<Api.Chat.Message[]>({ url: `chat/sessions/${sessionId}/messages` });
     if (!error && activeSessionId.value === sessionId) {
-      messages.value = data || [];
+      messages.value = (data || []).map(normalizeMessage);
     }
     loading.value = false;
   }

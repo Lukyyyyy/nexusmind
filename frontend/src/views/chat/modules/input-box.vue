@@ -65,12 +65,31 @@ watch(wsData, val => {
     chatStore.loadSessions();
     return;
   }
+  if (data.type === 'stop') return;
+  if (data.type === 'agent_step') {
+    const assistant = messages.value[messages.value.length - 1];
+    if (!assistant || assistant.role !== 'assistant') return;
+    const trace = Array.isArray(assistant.agentTrace) ? assistant.agentTrace : [];
+    const index = trace.findIndex(step => step.stepId === data.stepId);
+    const nextStep = data as Api.Chat.AgentStep;
+    assistant.agentTrace = index >= 0
+      ? trace.map((step, stepIndex) => (stepIndex === index ? nextStep : step))
+      : [...trace, nextStep];
+    assistant.status = 'loading';
+    scrollToBottom();
+    return;
+  }
 
   const assistant = messages.value[messages.value.length - 1];
 
   if (data.type === 'completion' && data.status === 'finished') {
     if (assistant?.role === 'assistant' && assistant.status !== 'error') {
       assistant.status = 'finished';
+      if (Array.isArray(assistant.agentTrace)) {
+        assistant.agentTrace = assistant.agentTrace.map(step =>
+          step.status === 'running' ? { ...step, status: 'completed' as const } : step
+        );
+      }
     }
     chatStore.refreshActiveSessionMessages();
   } else if (data.error) {
@@ -122,7 +141,8 @@ const handleSend = async () => {
   messages.value.push({
     content: '',
     role: 'assistant',
-    status: 'pending'
+    status: 'pending',
+    agentTrace: []
   });
   chatStore.wsSend(
     JSON.stringify({

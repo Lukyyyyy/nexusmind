@@ -15,6 +15,46 @@ function handleCopy(content: string) {
 
 const chatStore = useChatStore();
 
+const traceExpanded = ref(false);
+const traceSteps = computed<Api.Chat.AgentStep[]>(() => {
+  if (Array.isArray(props.msg.agentTrace)) return props.msg.agentTrace;
+  if (typeof props.msg.agentTrace === 'string') {
+    try {
+      return JSON.parse(props.msg.agentTrace) as Api.Chat.AgentStep[];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+});
+const traceRunning = computed(() => traceSteps.value.some(step => step.status === 'running'));
+const traceSummary = computed(() => {
+  if (traceRunning.value) return traceSteps.value.at(-1)?.title || '正在处理';
+  const toolCount = traceSteps.value.filter(step => step.category === 'tool').length;
+  return toolCount > 0 ? `已完成 · 调用了 ${toolCount} 个工具` : '已完成思考与整理';
+});
+
+watch(
+  () => [props.msg.status, traceSteps.value.length] as const,
+  ([status, length], previous) => {
+    if (!length) return;
+    if (status === 'finished' || status === 'error') {
+      traceExpanded.value = false;
+    } else if (!previous || previous[1] === 0) {
+      traceExpanded.value = true;
+    }
+  },
+  { immediate: true }
+);
+
+function formatInput(input?: Record<string, string | number> | null) {
+  if (!input) return [];
+  const labels: Record<string, string> = { query: '查询', sourceId: '来源', before: '前文', after: '后文' };
+  return Object.entries(input)
+    .filter(([key]) => key !== 'topK' && key !== 'limit')
+    .map(([key, value]) => ({ label: labels[key] || key, value }));
+}
+
 // 存储文件名和对应的事件处理
 const sourceFiles = ref<Array<{fileName: string, id: string}>>([]);
 
@@ -134,6 +174,48 @@ async function handleSourceFileClick(fileName: string) {
             <SystemLogo />
           </div>
           <div class="chat-message__assistant-body">
+            <div v-if="traceSteps.length" class="agent-trace" :class="{ 'is-running': traceRunning }">
+              <button
+                type="button"
+                class="agent-trace__summary"
+                :aria-expanded="traceExpanded"
+                @click="traceExpanded = !traceExpanded"
+              >
+                <span class="agent-trace__summary-main">
+                  <icon-eos-icons:three-dots-loading v-if="traceRunning" class="agent-trace__spinner" />
+                  <icon-solar:magic-stick-3-linear v-else />
+                  <span>{{ traceSummary }}</span>
+                </span>
+                <icon-material-symbols:keyboard-arrow-down-rounded
+                  class="agent-trace__arrow"
+                  :class="{ 'is-expanded': traceExpanded }"
+                />
+              </button>
+              <div v-show="traceExpanded" class="agent-trace__body">
+                <div v-for="step in traceSteps" :key="step.stepId" class="agent-step">
+                  <div class="agent-step__rail">
+                    <span class="agent-step__dot" :class="`is-${step.status}`">
+                      <icon-eos-icons:loading v-if="step.status === 'running'" />
+                      <icon-material-symbols:close-rounded v-else-if="step.status === 'error'" />
+                      <icon-material-symbols:check-rounded v-else />
+                    </span>
+                    <span class="agent-step__line"></span>
+                  </div>
+                  <div class="agent-step__content">
+                    <div class="agent-step__heading">
+                      <span>{{ step.title }}</span>
+                      <span v-if="step.durationMs != null" class="agent-step__duration">{{ step.durationMs }} ms</span>
+                    </div>
+                    <p>{{ step.detail }}</p>
+                    <div v-if="formatInput(step.input).length" class="agent-step__input">
+                      <span v-for="item in formatInput(step.input)" :key="item.label">
+                        <b>{{ item.label }}</b>{{ item.value }}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
             <div class="chat-message__assistant-content">
               <NText v-if="msg.status === 'pending'">
                 <icon-eos-icons:three-dots-loading class="text-8" />
@@ -234,6 +316,191 @@ async function handleSourceFileClick(fileName: string) {
 .chat-message__assistant-body {
   min-width: 0;
   padding-top: 4px;
+}
+
+.agent-trace {
+  max-width: 790px;
+  margin-bottom: 14px;
+  overflow: hidden;
+  border: 1px solid #dce4f2;
+  border-radius: 12px;
+  background: #f8faff;
+}
+
+.agent-trace.is-running {
+  border-color: #c8d8fb;
+  box-shadow: 0 0 0 2px rgb(36 91 219 / 5%);
+}
+
+.agent-trace__summary {
+  display: flex;
+  width: 100%;
+  min-height: 42px;
+  align-items: center;
+  justify-content: space-between;
+  border: 0;
+  background: transparent;
+  padding: 9px 12px;
+  color: #526176;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.agent-trace__summary:hover {
+  background: rgb(36 91 219 / 4%);
+}
+
+.agent-trace__summary-main {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.agent-trace__spinner {
+  color: #245bdb;
+}
+
+.agent-trace__arrow {
+  flex-shrink: 0;
+  font-size: 20px;
+  transition: transform 160ms ease;
+}
+
+.agent-trace__arrow.is-expanded {
+  transform: rotate(180deg);
+}
+
+.agent-trace__body {
+  border-top: 1px solid #e3e9f4;
+  padding: 12px 14px 5px;
+}
+
+.agent-step {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 9px;
+}
+
+.agent-step__rail {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+}
+
+.agent-step__dot {
+  display: grid;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 50%;
+  background: #e4eaf5;
+  color: #65748a;
+  font-size: 12px;
+}
+
+.agent-step__dot.is-running {
+  background: #e8f0ff;
+  color: #245bdb;
+}
+
+.agent-step__dot.is-error {
+  background: #fff0f0;
+  color: #d14343;
+}
+
+.agent-step__line {
+  width: 1px;
+  min-height: 18px;
+  flex: 1;
+  background: #dfe5ef;
+}
+
+.agent-step:last-child .agent-step__line {
+  visibility: hidden;
+}
+
+.agent-step__content {
+  min-width: 0;
+  padding: 0 0 14px;
+}
+
+.agent-step__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.agent-step__duration {
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.agent-step__content p {
+  margin: 4px 0 0;
+  color: #718096;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.agent-step__input {
+  display: flex;
+  margin-top: 7px;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.agent-step__input span {
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid #dfe6f2;
+  border-radius: 6px;
+  background: #fff;
+  padding: 3px 7px;
+  color: #65748a;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-step__input b {
+  margin-right: 5px;
+  color: #40516a;
+  font-weight: 600;
+}
+
+:global(.dark) .agent-trace {
+  border-color: #323d4f;
+  background: #1c232d;
+}
+
+:global(.dark) .agent-trace__body {
+  border-color: #303a49;
+}
+
+:global(.dark) .agent-trace__summary,
+:global(.dark) .agent-step__heading {
+  color: #d7deea;
+}
+
+:global(.dark) .agent-step__input span {
+  border-color: #374253;
+  background: #171d25;
+  color: #a8b3c4;
+}
+
+:global(.dark) .agent-step__input b {
+  color: #d1d9e6;
 }
 
 :global(.dark) .chat-message__assistant-content {
