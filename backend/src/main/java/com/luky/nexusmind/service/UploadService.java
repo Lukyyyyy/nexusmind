@@ -75,7 +75,7 @@ public class UploadService {
         boolean effectivePublic = DocumentPermissionPolicy.resolveUploadVisibility(orgTag, isPublic);
         boolean effectiveGraphEnabled = graphEnabled != null
                 ? graphEnabled
-                : !DocumentPermissionPolicy.isPrivateOrgTag(orgTag);
+                : true;
         // 获取文件类型信息
         String fileType = getFileType(fileName);
         String contentType = file.getContentType();

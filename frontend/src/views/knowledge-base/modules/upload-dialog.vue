@@ -69,8 +69,7 @@ watch(
   () => model.value.orgTag,
   orgTag => {
     if (typeof orgTag === 'string' && orgTag.startsWith('PRIVATE_')) model.value.isPublic = false;
-    if (typeof orgTag === 'string' && orgTag.startsWith('PRIVATE_')) model.value.graphEnabled = false;
-    else model.value.graphEnabled = true;
+    model.value.graphEnabled = true;
   }
 );
 
@@ -105,11 +104,11 @@ function onUpdate(option: unknown) {
       </NFormItem>
 
       <NFormItem label="是否公开" path="isPublic">
-        <NText v-if="isPrivateSpace" depth="3">私人空间文档固定为私有</NText>
+        <NText v-if="isPrivateSpace" depth="3">私有（仅自己可访问）</NText>
         <NRadioGroup v-else v-model:value="model.isPublic" name="visibility">
           <NSpace :size="16">
             <NRadio :value="true">公开</NRadio>
-            <NRadio :value="false">私有</NRadio>
+            <NRadio :value="false">仅组织内</NRadio>
           </NSpace>
         </NRadioGroup>
       </NFormItem>
@@ -128,7 +127,7 @@ function onUpdate(option: unknown) {
           <span>知识图谱<span class="invisible">*</span></span>
         </template>
         <NSwitch v-model:value="model.graphEnabled" />
-        <NText depth="3" class="ml-10px">抽取关系，确认后参与问答</NText>
+        <NText depth="3" class="ml-10px">抽取关系，确认后写入对应组织图谱</NText>
       </NFormItem>
       <NFormItem label="切片大小" path="chunkSize">
         <NSpace vertical :size="10">

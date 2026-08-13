@@ -42,7 +42,7 @@ type KnowledgeBaseListParams = CommonType.RecordNullable<
 const visibilityOptions = [
   { label: '全部', value: 'all' },
   { label: '公开', value: 'public' },
-  { label: '私有', value: 'private' }
+  { label: '受限访问', value: 'private' }
 ];
 const orgTagFilter = ref<Array<string | number>>([]);
 const visibilityFilter = ref<'all' | 'public' | 'private'>('all');
@@ -497,6 +497,7 @@ function matchesActiveFilters(task: Api.KnowledgeBase.UploadTask) {
 function renderOwnership(row: Api.KnowledgeBase.UploadTask) {
   const tagName = row.orgTagName || '默认组织';
   const isPublic = row.public || row.isPublic;
+  const restrictedLabel = row.orgTag?.startsWith('PRIVATE_') ? '私有' : '仅组织内';
 
   return (
     <div class="leading-5">
@@ -520,7 +521,7 @@ function renderOwnership(row: Api.KnowledgeBase.UploadTask) {
             {tagName}
           </NTag>
         )}
-        {isPublic ? <NTag size="small" type="success">公开</NTag> : <NTag size="small" type="warning">私有</NTag>}
+        {isPublic ? <NTag size="small" type="success">公开</NTag> : <NTag size="small" type="warning">{restrictedLabel}</NTag>}
       </div>
     </div>
   );
@@ -944,7 +945,7 @@ async function onBeforeUpload(
             {{ selectedOrgTagNames[String(tagId)] || tagId }}
           </NTag>
           <NTag v-if="visibilityFilter !== 'all'" size="small" closable @close="handleFilterTagClose('isPublic')">
-            {{ visibilityFilter === 'public' ? '公开' : '私有' }}
+            {{ visibilityFilter === 'public' ? '公开' : '受限访问' }}
           </NTag>
         </div>
       </div>
