@@ -4,6 +4,31 @@ defineOptions({ name: 'ChatMessage' });
 
 const props = defineProps<{ msg: Api.Chat.Message }>();
 
+const weekDayLabels = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+
+const messageTime = computed(() => {
+  if (!props.msg.timestamp) return '';
+
+  const timestamp = dayjs(props.msg.timestamp);
+  if (!timestamp.isValid()) return '';
+
+  const today = dayjs().startOf('day');
+  const messageDay = timestamp.startOf('day');
+  const time = timestamp.format('HH:mm');
+
+  if (messageDay.isSame(today)) return time;
+  if (messageDay.isSame(today.subtract(1, 'day'))) return `昨天 ${time}`;
+
+  // 周一作为一周的开始；更早的消息（包括上周）显示具体日期。
+  const daysSinceMonday = (today.day() + 6) % 7;
+  const currentWeekStart = today.subtract(daysSinceMonday, 'day');
+  if (!messageDay.isBefore(currentWeekStart) && !messageDay.isAfter(today)) {
+    return `${weekDayLabels[timestamp.day()]} ${time}`;
+  }
+
+  return timestamp.format('MM-DD HH:mm');
+});
+
 function handleCopy(content: string) {
   navigator.clipboard.writeText(content);
   window.$message?.success('已复制');
@@ -202,6 +227,7 @@ async function handleContentClick(event: MouseEvent) {
               <NText tag="div" class="chat-message__text whitespace-pre-wrap text-4">{{ content }}</NText>
             </div>
             <div class="chat-message__actions justify-end">
+              <time v-if="messageTime" class="chat-message__time" :datetime="msg.timestamp">{{ messageTime }}</time>
               <NButton quaternary size="tiny" aria-label="复制消息" @click="handleCopy(msg.content)">
                 <template #icon><icon-mynaui:copy /></template>
               </NButton>
@@ -272,6 +298,7 @@ async function handleContentClick(event: MouseEvent) {
               <NButton quaternary size="tiny" aria-label="复制消息" @click="handleCopy(msg.content)">
                 <template #icon><icon-mynaui:copy /></template>
               </NButton>
+              <time v-if="messageTime" class="chat-message__time" :datetime="msg.timestamp">{{ messageTime }}</time>
             </div>
           </div>
         </div>
@@ -593,13 +620,31 @@ async function handleContentClick(event: MouseEvent) {
 .chat-message__actions {
   display: flex;
   min-height: 24px;
+  align-items: center;
   margin-top: 4px;
-  opacity: 0.45;
-  transition: opacity 160ms ease;
+  gap: 4px;
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transition:
+    opacity 160ms ease,
+    visibility 160ms ease;
 }
 
-.chat-message:hover .chat-message__actions {
+.chat-message__user-stack:hover .chat-message__actions,
+.chat-message__user-stack:focus-within .chat-message__actions,
+.chat-message__assistant-body:hover .chat-message__actions,
+.chat-message__assistant-body:focus-within .chat-message__actions {
   opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
+}
+
+.chat-message__time {
+  color: #8a94a6;
+  font-size: 12px;
+  line-height: 24px;
+  white-space: nowrap;
 }
 
 .chat-message__text,

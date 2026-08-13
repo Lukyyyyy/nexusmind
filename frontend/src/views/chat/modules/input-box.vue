@@ -143,17 +143,20 @@ const handleSend = async () => {
   const content = input.value.message.trim();
   if (!content) return;
 
+  const timestamp = new Date().toISOString();
+
   messages.value.push({
     content,
     role: 'user',
     status: 'finished',
-    timestamp: new Date().toISOString()
+    timestamp
   });
   messages.value.push({
     content: '',
     role: 'assistant',
     status: 'pending',
     agentTrace: [],
+    timestamp,
     thinkingStartedAt: Date.now()
   });
   chatStore.wsSend(
