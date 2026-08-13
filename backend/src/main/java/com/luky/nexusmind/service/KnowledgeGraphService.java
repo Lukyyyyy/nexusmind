@@ -20,15 +20,18 @@ public class KnowledgeGraphService {
     private final GraphCandidateRepository candidateRepository;
     private final KnowledgeGraphStoreService storeService;
     private final KnowledgeGraphExtractionService extractionService;
+    private final GraphPromptTemplateService templateService;
 
     public KnowledgeGraphService(FileUploadRepository fileUploadRepository,
                                  GraphCandidateRepository candidateRepository,
                                  KnowledgeGraphStoreService storeService,
-                                 KnowledgeGraphExtractionService extractionService) {
+                                 KnowledgeGraphExtractionService extractionService,
+                                 GraphPromptTemplateService templateService) {
         this.fileUploadRepository = fileUploadRepository;
         this.candidateRepository = candidateRepository;
         this.storeService = storeService;
         this.extractionService = extractionService;
+        this.templateService = templateService;
     }
 
     @Transactional(readOnly = true)
@@ -78,9 +81,10 @@ public class KnowledgeGraphService {
     }
 
     @Transactional
-    public DocumentGraphResponse setEnabled(String fileMd5, String userId, String role, boolean enabled) {
+    public DocumentGraphResponse setEnabled(String fileMd5, String userId, String role, boolean enabled, Long templateId) {
         FileUpload file = requireManageableFile(fileMd5, userId, role);
         file.setGraphEnabled(enabled);
+        if (enabled) file.setGraphPromptTemplateId(templateService.resolve(templateId).id());
         file.setGraphError(null);
         if (!enabled) {
             storeService.removeDocument(file.getId());
@@ -95,9 +99,10 @@ public class KnowledgeGraphService {
     }
 
     @Transactional
-    public DocumentGraphResponse rebuild(String fileMd5, String userId, String role) {
+    public DocumentGraphResponse rebuild(String fileMd5, String userId, String role, Long templateId) {
         FileUpload file = requireManageableFile(fileMd5, userId, role);
         if (!file.isGraphEnabled()) throw new CustomException("请先开启知识图谱", HttpStatus.CONFLICT);
+        file.setGraphPromptTemplateId(templateService.resolve(templateId != null ? templateId : file.getGraphPromptTemplateId()).id());
         storeService.removeDocument(file.getId());
         file.setGraphStatus(KnowledgeGraphStatus.QUEUED);
         file.setGraphError(null);
@@ -129,8 +134,10 @@ public class KnowledgeGraphService {
         KnowledgeGraphStatus status = file.getGraphStatus() == null
                 ? KnowledgeGraphStatus.DISABLED : file.getGraphStatus();
         GraphVisualization visualization = visualization(candidates);
+        GraphPromptTemplateService.ResolvedTemplate template = templateService.resolve(file.getGraphPromptTemplateId());
         return new DocumentGraphResponse(file.getFileMd5(), file.isGraphEnabled(), status,
-                file.getGraphError(), candidates, visualization.nodes(), visualization.edges(), storeService.isEnabled());
+                file.getGraphError(), file.getGraphPromptTemplateId(), template.name(), candidates,
+                visualization.nodes(), visualization.edges(), storeService.isEnabled());
     }
 
     private GraphVisualization visualization(List<CandidateResponse> candidates) {
@@ -160,9 +167,11 @@ public class KnowledgeGraphService {
     }
 
     private CandidateResponse candidate(GraphCandidate value) {
-        return new CandidateResponse(value.getId(), value.getSubjectName(), value.getSubjectType(), value.getPredicate(),
-                value.getObjectName(), value.getObjectType(), value.getEvidenceChunkId(), value.getEvidenceText(),
-                value.getConfidence(), value.isSelected(), value.getStatus());
+        return new CandidateResponse(value.getId(), value.getSubjectName(), value.getSubjectMentionName(),
+                value.getSubjectType(), value.getPredicate(), value.getObjectName(), value.getObjectMentionName(),
+                value.getObjectType(), value.getEvidenceChunkId(), value.getEvidenceText(),
+                value.getConfidence(), value.getValueScore() == null ? 0.0 : value.getValueScore(),
+                value.isSelected(), value.getStatus());
     }
 
     private boolean hasText(String value) { return value != null && !value.isBlank(); }
@@ -182,12 +191,13 @@ public class KnowledgeGraphService {
     }
 
     public record DocumentGraphResponse(String fileMd5, boolean enabled, KnowledgeGraphStatus status,
-                                        String error, List<CandidateResponse> candidates,
+                                        String error, Long templateId, String templateName, List<CandidateResponse> candidates,
                                         List<GraphNodeResponse> nodes, List<GraphEdgeResponse> edges,
                                         boolean neo4jEnabled) {}
-    public record CandidateResponse(Long id, String subjectName, String subjectType, String predicate,
-                                    String objectName, String objectType, Integer evidenceChunkId,
-                                    String evidenceText, Double confidence, boolean selected,
+    public record CandidateResponse(Long id, String subjectName, String subjectMentionName,
+                                    String subjectType, String predicate,
+                                    String objectName, String objectMentionName, String objectType, Integer evidenceChunkId,
+                                    String evidenceText, Double confidence, Double valueScore, boolean selected,
                                     GraphCandidateStatus status) {}
     public record GraphNodeResponse(String id, String name, String type, int degree) {}
     public record GraphEdgeResponse(String id, String source, String target, String predicate,
@@ -195,7 +205,8 @@ public class KnowledgeGraphService {
                                     GraphCandidateStatus status) {}
     public record CandidateUpdate(Boolean selected, String subjectName, String subjectType,
                                   String predicate, String objectName, String objectType) {}
-    public record EnabledRequest(boolean enabled) {}
+    public record EnabledRequest(boolean enabled, Long templateId) {}
+    public record RebuildRequest(Long templateId) {}
 
     private record GraphVisualization(List<GraphNodeResponse> nodes, List<GraphEdgeResponse> edges) {}
 

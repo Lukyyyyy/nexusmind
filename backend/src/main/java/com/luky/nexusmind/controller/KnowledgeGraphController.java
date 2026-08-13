@@ -67,14 +67,15 @@ public class KnowledgeGraphController {
                                      @RequestAttribute("userId") String userId,
                                      @RequestAttribute("role") String role,
                                      @RequestBody KnowledgeGraphService.EnabledRequest request) {
-        return ok(graphService.setEnabled(fileMd5, userId, role, request.enabled()));
+        return ok(graphService.setEnabled(fileMd5, userId, role, request.enabled(), request.templateId()));
     }
 
     @PostMapping("/documents/{fileMd5}/rebuild")
     public ResponseEntity<?> rebuild(@PathVariable String fileMd5,
                                      @RequestAttribute("userId") String userId,
-                                     @RequestAttribute("role") String role) {
-        return ok(graphService.rebuild(fileMd5, userId, role));
+                                     @RequestAttribute("role") String role,
+                                     @RequestBody(required = false) KnowledgeGraphService.RebuildRequest request) {
+        return ok(graphService.rebuild(fileMd5, userId, role, request == null ? null : request.templateId()));
     }
 
     private ResponseEntity<?> ok(Object data) {

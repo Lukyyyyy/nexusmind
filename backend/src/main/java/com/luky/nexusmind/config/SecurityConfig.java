@@ -74,6 +74,7 @@ public class SecurityConfig {
                             .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
                             // 模型配置：普通用户管理自己的模型，管理员额外管理系统模型
                             .requestMatchers("/api/v1/model-config/**").hasAnyRole("USER", "ADMIN")
+                            .requestMatchers("/api/v1/graph-prompt-templates/**").hasAnyRole("USER", "ADMIN")
                             // 用户组织标签管理接口
                             .requestMatchers("/api/v1/users/primary-org").hasAnyRole("USER", "ADMIN")
                             // 其他请求需要认证

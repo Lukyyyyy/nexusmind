@@ -41,19 +41,35 @@ public class KnowledgeGraphStoreService {
             driver.verifyConnectivity();
             try (Session session = driver.session()) {
                 session.executeWrite(tx -> {
+                    tx.run("MATCH (c:Claim {fileUploadId: $fileUploadId}) DETACH DELETE c",
+                            Values.parameters("fileUploadId", file.getId())).consume();
+                    // Clean up graphs published by versions before Claim nodes were introduced.
                     tx.run("MATCH ()-[r:RELATED {fileUploadId: $fileUploadId}]->() DELETE r",
                             Values.parameters("fileUploadId", file.getId())).consume();
                     for (int scopeIndex = 0; scopeIndex < scopeIds.size(); scopeIndex++) {
                         String scopeId = scopeIds.get(scopeIndex);
                         for (GraphCandidate candidate : candidates) {
+                            String subjectMention = hasText(candidate.getSubjectMentionName())
+                                    ? candidate.getSubjectMentionName() : candidate.getSubjectName();
+                            String objectMention = hasText(candidate.getObjectMentionName())
+                                    ? candidate.getObjectMentionName() : candidate.getObjectName();
                             Map<String, Object> params = new HashMap<>();
                             params.put("subjectKey", entityKey(scopeId, candidate.getSubjectType(), candidate.getSubjectName()));
                             params.put("subjectName", candidate.getSubjectName());
+                            params.put("subjectNormalizedName", normalizeName(subjectMention));
                             params.put("subjectType", normalizeType(candidate.getSubjectType()));
                             params.put("objectKey", entityKey(scopeId, candidate.getObjectType(), candidate.getObjectName()));
                             params.put("objectName", candidate.getObjectName());
+                            params.put("objectNormalizedName", normalizeName(objectMention));
                             params.put("objectType", normalizeType(candidate.getObjectType()));
                             params.put("scopeId", scopeId);
+                            params.put("subjectMention", subjectMention);
+                            params.put("objectMention", objectMention);
+                            params.put("subjectAliasKey", aliasKey(scopeId, candidate.getSubjectType(),
+                                    subjectMention, (String) params.get("subjectKey")));
+                            params.put("objectAliasKey", aliasKey(scopeId, candidate.getObjectType(),
+                                    objectMention, (String) params.get("objectKey")));
+                            params.put("claimKey", scopeId + "|" + candidate.getId());
                             // Question answering reads one canonical copy per document. For public
                             // documents the internal copy is canonical so organization members can
                             // still traverse paths between public and organization-only documents.
@@ -66,23 +82,49 @@ public class KnowledgeGraphStoreService {
                             params.put("chunkId", candidate.getEvidenceChunkId());
                             params.put("evidence", candidate.getEvidenceText());
                             params.put("confidence", candidate.getConfidence() == null ? 0.0 : candidate.getConfidence());
+                            params.put("valueScore", candidate.getValueScore() == null ? 0.0 : candidate.getValueScore());
                             tx.run("""
                                 MERGE (s:Entity {key: $subjectKey})
-                                SET s.name = $subjectName, s.type = $subjectType, s.scopeId = $scopeId
+                                ON CREATE SET s.name = $subjectName, s.type = $subjectType, s.scopeId = $scopeId,
+                                              s.createdAt = datetime()
+                                SET s.updatedAt = datetime()
                                 MERGE (o:Entity {key: $objectKey})
-                                SET o.name = $objectName, o.type = $objectType, o.scopeId = $scopeId
-                                MERGE (s)-[r:RELATED {candidateId: $candidateId, scopeId: $scopeId}]->(o)
-                                SET r.predicate = $predicate,
-                                    r.fileUploadId = $fileUploadId,
-                                    r.fileMd5 = $fileMd5,
-                                    r.fileName = $fileName,
-                                    r.primaryScope = $primaryScope,
-                                    r.chunkId = $chunkId,
-                                    r.evidence = $evidence,
-                                    r.confidence = $confidence
+                                ON CREATE SET o.name = $objectName, o.type = $objectType, o.scopeId = $scopeId,
+                                              o.createdAt = datetime()
+                                SET o.updatedAt = datetime()
+                                MERGE (sa:EntityAlias {key: $subjectAliasKey})
+                                SET sa.name = $subjectMention, sa.normalizedName = $subjectNormalizedName,
+                                    sa.type = $subjectType, sa.scopeId = $scopeId
+                                MERGE (sa)-[:REFERS_TO]->(s)
+                                MERGE (oa:EntityAlias {key: $objectAliasKey})
+                                SET oa.name = $objectMention, oa.normalizedName = $objectNormalizedName,
+                                    oa.type = $objectType, oa.scopeId = $scopeId
+                                MERGE (oa)-[:REFERS_TO]->(o)
+                                MERGE (c:Claim {key: $claimKey})
+                                SET c.candidateId = $candidateId,
+                                    c.scopeId = $scopeId,
+                                    c.predicate = $predicate,
+                                    c.normalizedPredicate = toLower(trim($predicate)),
+                                    c.fileUploadId = $fileUploadId,
+                                    c.fileMd5 = $fileMd5,
+                                    c.fileName = $fileName,
+                                    c.primaryScope = $primaryScope,
+                                    c.chunkId = $chunkId,
+                                    c.evidence = $evidence,
+                                    c.confidence = $confidence,
+                                    c.valueScore = $valueScore,
+                                    c.subjectMention = $subjectMention,
+                                    c.objectMention = $objectMention,
+                                    c.updatedAt = datetime()
+                                MERGE (c)-[:SUBJECT]->(s)
+                                MERGE (c)-[:OBJECT]->(o)
+                                MERGE (c)-[:SUBJECT_MENTION]->(sa)
+                                MERGE (c)-[:OBJECT_MENTION]->(oa)
                                 """, params).consume();
                         }
                     }
+                    tx.run("MATCH (a:EntityAlias) WHERE NOT (a)<-[:SUBJECT_MENTION]-(:Claim) " +
+                            "AND NOT (a)<-[:OBJECT_MENTION]-(:Claim) DETACH DELETE a").consume();
                     tx.run("MATCH (n:Entity) WHERE NOT (n)--() DELETE n").consume();
                     return null;
                 });
@@ -98,8 +140,12 @@ public class KnowledgeGraphStoreService {
         if (driver == null || fileUploadId == null) return;
         try (Session session = driver.session()) {
             session.executeWrite(tx -> {
+                tx.run("MATCH (c:Claim {fileUploadId: $fileUploadId}) DETACH DELETE c",
+                        Values.parameters("fileUploadId", fileUploadId)).consume();
                 tx.run("MATCH ()-[r:RELATED {fileUploadId: $fileUploadId}]->() DELETE r",
                         Values.parameters("fileUploadId", fileUploadId)).consume();
+                tx.run("MATCH (a:EntityAlias) WHERE NOT (a)<-[:SUBJECT_MENTION]-(:Claim) " +
+                        "AND NOT (a)<-[:OBJECT_MENTION]-(:Claim) DETACH DELETE a").consume();
                 tx.run("MATCH (n:Entity) WHERE NOT (n)--() DELETE n").consume();
                 return null;
             });
@@ -114,16 +160,18 @@ public class KnowledgeGraphStoreService {
         List<Long> ids = accessibleFileIds.stream().filter(Objects::nonNull).distinct().toList();
         try (Session session = driver.session()) {
             return session.executeRead(tx -> tx.run("""
-                    MATCH p=(start:Entity)-[rels:RELATED*1..2]-(end:Entity)
-                    WHERE ALL(r IN rels WHERE r.fileUploadId IN $fileIds
-                              AND coalesce(r.primaryScope, true) = true)
-                      AND ALL(n IN nodes(p) WHERE size(n.name) >= 2)
-                      AND ANY(n IN nodes(p) WHERE toLower(n.name) CONTAINS toLower($query)
-                           OR toLower($query) CONTAINS toLower(n.name))
-                    RETURN [n IN nodes(p) | {key:n.key, name:n.name, type:n.type}] AS nodes,
-                           [r IN rels | {predicate:r.predicate, fileName:r.fileName,
-                              fileMd5:r.fileMd5, chunkId:r.chunkId, evidence:r.evidence,
-                              source:startNode(r).key, target:endNode(r).key}] AS relations
+                    MATCH (start:Entity)<-[:SUBJECT]-(c:Claim)-[:OBJECT]->(end:Entity)
+                    WHERE c.fileUploadId IN $fileIds AND coalesce(c.primaryScope, true) = true
+                      AND size(start.name) >= 2 AND size(end.name) >= 2
+                      AND (toLower(start.name) CONTAINS toLower($query)
+                           OR toLower(end.name) CONTAINS toLower($query)
+                           OR toLower($query) CONTAINS toLower(start.name)
+                           OR toLower($query) CONTAINS toLower(end.name))
+                    RETURN [{key:start.key, name:start.name, type:start.type},
+                            {key:end.key, name:end.name, type:end.type}] AS nodes,
+                           [{predicate:c.predicate, fileName:c.fileName,
+                              fileMd5:c.fileMd5, chunkId:c.chunkId, evidence:c.evidence,
+                              source:start.key, target:end.key}] AS relations
                     LIMIT $limit
                     """, Values.parameters("fileIds", ids, "query", query, "limit", limit))
                     .list(record -> new GraphPath(
@@ -149,21 +197,21 @@ public class KnowledgeGraphStoreService {
         int safeLimit = Math.min(Math.max(limit, 1), 1001);
         try (Session session = driver.session()) {
             return session.executeRead(tx -> tx.run("""
-                    MATCH (s:Entity)-[r:RELATED]->(o:Entity)
-                    WHERE r.scopeId IN $scopeIds
-                      AND r.fileUploadId IN $fileIds
+                    MATCH (s:Entity)<-[:SUBJECT]-(c:Claim)-[:OBJECT]->(o:Entity)
+                    WHERE c.scopeId IN $scopeIds
+                      AND c.fileUploadId IN $fileIds
                       AND ($query = '' OR toLower(s.name) CONTAINS toLower($query)
                            OR toLower(o.name) CONTAINS toLower($query)
-                           OR toLower(r.predicate) CONTAINS toLower($query)
-                           OR toLower(coalesce(r.evidence, '')) CONTAINS toLower($query))
+                           OR toLower(c.predicate) CONTAINS toLower($query)
+                           OR toLower(coalesce(c.evidence, '')) CONTAINS toLower($query))
                       AND ($entityType = '' OR s.type = $entityType OR o.type = $entityType)
                     RETURN s.key AS sourceKey, s.name AS sourceName, s.type AS sourceType,
                            o.key AS targetKey, o.name AS targetName, o.type AS targetType,
-                           r.candidateId AS candidateId, r.predicate AS predicate,
-                           r.fileUploadId AS fileUploadId, r.fileMd5 AS fileMd5,
-                           r.fileName AS fileName, r.chunkId AS chunkId,
-                           r.evidence AS evidence, r.confidence AS confidence
-                    ORDER BY r.confidence DESC, r.candidateId ASC
+                           c.candidateId AS candidateId, c.predicate AS predicate,
+                           c.fileUploadId AS fileUploadId, c.fileMd5 AS fileMd5,
+                           c.fileName AS fileName, c.chunkId AS chunkId,
+                           c.evidence AS evidence, c.confidence AS confidence
+                    ORDER BY c.confidence DESC, c.candidateId ASC
                     LIMIT $limit
                     """, Values.parameters(
                             "scopeIds", scopeIds.stream().filter(Objects::nonNull).distinct().toList(),
@@ -198,6 +246,10 @@ public class KnowledgeGraphStoreService {
         if (driver == null) return;
         try (Session session = driver.session()) {
             session.run("CREATE CONSTRAINT entity_key_unique IF NOT EXISTS FOR (e:Entity) REQUIRE e.key IS UNIQUE").consume();
+            session.run("CREATE CONSTRAINT entity_alias_key_unique IF NOT EXISTS FOR (a:EntityAlias) REQUIRE a.key IS UNIQUE").consume();
+            session.run("CREATE CONSTRAINT claim_key_unique IF NOT EXISTS FOR (c:Claim) REQUIRE c.key IS UNIQUE").consume();
+            session.run("CREATE INDEX claim_scope IF NOT EXISTS FOR (c:Claim) ON (c.scopeId)").consume();
+            session.run("CREATE INDEX claim_file IF NOT EXISTS FOR (c:Claim) ON (c.fileUploadId)").consume();
         }
     }
 
@@ -236,6 +288,15 @@ public class KnowledgeGraphStoreService {
 
     private String entityKey(String scopeId, String type, String name) {
         return scopeId + "|" + normalizeType(type) + "|" + normalizeName(name);
+    }
+
+    private String aliasKey(String scopeId, String type, String name, String entityKey) {
+        // Include the resolved entity key so homonyms may remain attached to different entities.
+        return scopeId + "|" + normalizeType(type) + "|" + normalizeName(name) + "|" + entityKey;
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     static String normalizeName(String value) {

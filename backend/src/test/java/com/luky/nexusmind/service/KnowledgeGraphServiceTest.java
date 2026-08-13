@@ -18,7 +18,9 @@ class KnowledgeGraphServiceTest {
         GraphCandidateRepository candidates = mock(GraphCandidateRepository.class);
         KnowledgeGraphStoreService store = mock(KnowledgeGraphStoreService.class);
         KnowledgeGraphExtractionService extraction = mock(KnowledgeGraphExtractionService.class);
-        KnowledgeGraphService service = new KnowledgeGraphService(files, candidates, store, extraction);
+        GraphPromptTemplateService templates = mock(GraphPromptTemplateService.class);
+        when(templates.resolve(any())).thenReturn(new GraphPromptTemplateService.ResolvedTemplate(1L, "通用", ""));
+        KnowledgeGraphService service = new KnowledgeGraphService(files, candidates, store, extraction, templates);
 
         FileUpload file = new FileUpload();
         file.setId(7L);

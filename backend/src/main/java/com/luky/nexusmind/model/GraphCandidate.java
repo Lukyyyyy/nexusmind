@@ -24,6 +24,10 @@ public class GraphCandidate {
     @Column(name = "subject_name", nullable = false, length = 255)
     private String subjectName;
 
+    /** Original surface form kept even when a reviewer maps it to a canonical entity name. */
+    @Column(name = "subject_mention_name", length = 255)
+    private String subjectMentionName;
+
     @Column(name = "subject_type", nullable = false, length = 64)
     private String subjectType;
 
@@ -32,6 +36,10 @@ public class GraphCandidate {
 
     @Column(name = "object_name", nullable = false, length = 255)
     private String objectName;
+
+    /** Original surface form kept even when a reviewer maps it to a canonical entity name. */
+    @Column(name = "object_mention_name", length = 255)
+    private String objectMentionName;
 
     @Column(name = "object_type", nullable = false, length = 64)
     private String objectType;
@@ -43,6 +51,10 @@ public class GraphCandidate {
     private String evidenceText;
 
     private Double confidence;
+
+    /** Reuse and decision value in the cross-document organization graph, independent of confidence. */
+    @Column(name = "value_score")
+    private Double valueScore;
 
     @Column(nullable = false)
     private boolean selected = true;

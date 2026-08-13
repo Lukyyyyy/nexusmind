@@ -51,6 +51,9 @@ public class UploadService {
     @Autowired
     private AiTraceService aiTraceService;
 
+    @Autowired
+    private GraphPromptTemplateService graphPromptTemplateService;
+
     /**
      * 上传文件分片
      *
@@ -66,11 +69,12 @@ public class UploadService {
      */
     public void uploadChunk(String fileMd5, int chunkIndex, long totalSize, String fileName, 
                            MultipartFile file, String orgTag, boolean isPublic, String userId) throws IOException {
-        uploadChunk(fileMd5, chunkIndex, totalSize, fileName, file, orgTag, isPublic, null, userId);
+        uploadChunk(fileMd5, chunkIndex, totalSize, fileName, file, orgTag, isPublic, null, null, userId);
     }
 
     public void uploadChunk(String fileMd5, int chunkIndex, long totalSize, String fileName,
                            MultipartFile file, String orgTag, boolean isPublic, Boolean graphEnabled,
+                           Long graphPromptTemplateId,
                            String userId) throws IOException {
         boolean effectivePublic = DocumentPermissionPolicy.resolveUploadVisibility(orgTag, isPublic);
         boolean effectiveGraphEnabled = graphEnabled != null
@@ -101,6 +105,9 @@ public class UploadService {
                 fileUpload.setOrgTag(orgTag); // 设置组织标签
                 fileUpload.setPublic(effectivePublic); // 私人空间文档不可公开
                 fileUpload.setGraphEnabled(effectiveGraphEnabled);
+                fileUpload.setGraphPromptTemplateId(effectiveGraphEnabled
+                        ? graphPromptTemplateService.resolve(graphPromptTemplateId).id()
+                        : null);
                 fileUpload.setGraphStatus(effectiveGraphEnabled
                         ? com.luky.nexusmind.model.KnowledgeGraphStatus.QUEUED
                         : com.luky.nexusmind.model.KnowledgeGraphStatus.DISABLED);

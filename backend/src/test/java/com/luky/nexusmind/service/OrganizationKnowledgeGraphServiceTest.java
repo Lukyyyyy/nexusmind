@@ -44,9 +44,44 @@ class OrganizationKnowledgeGraphServiceTest {
         assertEquals(1, response.edges().size());
         assertEquals("架构说明.pdf", response.edges().get(0).fileName());
         assertEquals("订单系统依赖 Redis", response.edges().get(0).evidenceText());
+        assertEquals(1, response.edges().get(0).supportCount());
+        assertEquals(1, response.edges().get(0).documentCount());
+        assertFalse(response.edges().get(0).disputed());
+        assertEquals(1, response.edges().get(0).evidences().size());
         assertEquals(2, response.documents().size());
         assertEquals(1, response.stats().documentCount());
         assertTrue(response.neo4jEnabled());
+    }
+
+    @Test
+    void aggregatesDuplicateFactsAndMarksDifferentStatementsWithoutOverwritingEvidence() {
+        DocumentService documents = mock(DocumentService.class);
+        OrganizationTagRepository organizations = mock(OrganizationTagRepository.class);
+        KnowledgeGraphStoreService store = mock(KnowledgeGraphStoreService.class);
+        OrganizationKnowledgeGraphService service = new OrganizationKnowledgeGraphService(documents, organizations, store);
+        FileUpload first = file(7L, "研发部", false, true, KnowledgeGraphStatus.PUBLISHED);
+        FileUpload second = file(8L, "研发部", false, true, KnowledgeGraphStatus.PUBLISHED);
+        when(documents.getAccessibleFiles("jack", "", "USER")).thenReturn(List.of(first, second));
+        when(documents.getEffectiveOrganizationTags("jack")).thenReturn(List.of("研发部"));
+        when(organizations.findAll()).thenReturn(List.of());
+        when(store.isEnabled()).thenReturn(true);
+        when(store.loadOrganizationRelations(anyList(), anyList(), isNull(), isNull(), eq(301))).thenReturn(List.of(
+                relation(11L, "Redis", 7L, "架构说明.pdf", "订单系统依赖 Redis", 0.94),
+                relation(12L, "Redis", 8L, "部署说明.pdf", "生产环境仍依赖 Redis", 0.91),
+                relation(13L, "KeyDB", 8L, "部署说明.pdf", "新版本改为依赖 KeyDB", 0.88)
+        ));
+
+        OrganizationKnowledgeGraphService.OrganizationGraphResponse response = service.getOrganizationGraph(
+                "ORG_INTERNAL:研发部", "jack", "USER", null, null, null, null);
+
+        assertEquals(2, response.edges().size());
+        OrganizationKnowledgeGraphService.GraphEdge redis = response.edges().stream()
+                .filter(edge -> edge.evidenceText().contains("Redis")).findFirst().orElseThrow();
+        assertEquals(2, redis.supportCount());
+        assertEquals(2, redis.documentCount());
+        assertTrue(redis.disputed());
+        assertEquals(2, redis.evidences().size());
+        assertTrue(response.edges().stream().allMatch(OrganizationKnowledgeGraphService.GraphEdge::disputed));
     }
 
     @Test
@@ -118,5 +153,14 @@ class OrganizationKnowledgeGraphServiceTest {
         file.setGraphEnabled(graphEnabled);
         file.setGraphStatus(graphStatus);
         return file;
+    }
+
+    private KnowledgeGraphStoreService.OrganizationRelation relation(Long candidateId, String targetName,
+                                                                      Long fileId, String fileName,
+                                                                      String evidence, double confidence) {
+        return new KnowledgeGraphStoreService.OrganizationRelation(
+                "ORG_INTERNAL:研发部|SYSTEM|订单系统", "订单系统", "SYSTEM",
+                "ORG_INTERNAL:研发部|SERVICE|" + targetName.toLowerCase(), targetName, "SERVICE",
+                candidateId, "依赖", fileId, "md5-" + fileId, fileName, 3, evidence, confidence);
     }
 }

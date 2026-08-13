@@ -79,22 +79,26 @@ public class OrganizationKnowledgeGraphService {
                 ? loaded.subList(0, limit)
                 : loaded;
 
+        Map<FactKey, MutableFact> facts = new LinkedHashMap<>();
+        relations.forEach(relation -> facts.computeIfAbsent(FactKey.of(relation), ignored -> new MutableFact(relation))
+                .addEvidence(relation));
+        Map<StatementKey, Set<String>> statementTargets = new HashMap<>();
+        facts.values().forEach(fact -> statementTargets
+                .computeIfAbsent(fact.statementKey(), ignored -> new HashSet<>()).add(fact.targetKey));
+
         Map<String, MutableNode> nodes = new LinkedHashMap<>();
-        List<GraphEdge> edges = relations.stream().map(relation -> {
-            nodes.computeIfAbsent(relation.sourceKey(), ignored -> new MutableNode(
-                    relation.sourceKey(), relation.sourceName(), relation.sourceType())).incrementDegree();
-            nodes.computeIfAbsent(relation.targetKey(), ignored -> new MutableNode(
-                    relation.targetKey(), relation.targetName(), relation.targetType())).incrementDegree();
-            return new GraphEdge(
-                    "candidate-" + relation.candidateId(), relation.sourceKey(), relation.targetKey(),
-                    relation.predicate(), relation.confidence(), relation.chunkId(), relation.evidence(),
-                    relation.fileUploadId(), relation.fileMd5(), relation.fileName()
-            );
+        List<GraphEdge> edges = facts.values().stream().map(fact -> {
+            nodes.computeIfAbsent(fact.sourceKey, ignored -> new MutableNode(
+                    fact.sourceKey, fact.sourceName, fact.sourceType)).incrementDegree();
+            nodes.computeIfAbsent(fact.targetKey, ignored -> new MutableNode(
+                    fact.targetKey, fact.targetName, fact.targetType)).incrementDegree();
+            return fact.response(statementTargets.getOrDefault(fact.statementKey(), Set.of()).size() > 1);
         }).toList();
 
         List<GraphNode> graphNodes = nodes.values().stream().map(MutableNode::response).toList();
         List<String> entityTypes = graphNodes.stream().map(GraphNode::type).distinct().sorted().toList();
-        Set<Long> contributingDocuments = edges.stream().map(GraphEdge::fileUploadId).collect(Collectors.toSet());
+        Set<Long> contributingDocuments = edges.stream().flatMap(edge -> edge.evidences().stream())
+                .map(GraphEvidence::fileUploadId).collect(Collectors.toSet());
         List<DocumentOption> documents = publishedFiles.stream()
                 .sorted(Comparator.comparing(FileUpload::getFileName, String.CASE_INSENSITIVE_ORDER))
                 .map(file -> new DocumentOption(file.getId(), file.getFileMd5(), file.getFileName()))
@@ -109,7 +113,8 @@ public class OrganizationKnowledgeGraphService {
                 edges,
                 entityTypes,
                 documents,
-                new GraphStats(graphNodes.size(), edges.size(), contributingDocuments.size()),
+                new GraphStats(graphNodes.size(), edges.size(), contributingDocuments.size(),
+                        (int) edges.stream().filter(GraphEdge::disputed).count()),
                 truncated,
                 graphStoreService.isEnabled()
         );
@@ -188,11 +193,16 @@ public class OrganizationKnowledgeGraphService {
 
     public record GraphEdge(String id, String source, String target, String predicate,
                             Double confidence, Integer evidenceChunkId, String evidenceText,
-                            Long fileUploadId, String fileMd5, String fileName) {}
+                            Long fileUploadId, String fileMd5, String fileName,
+                            int supportCount, int documentCount, boolean disputed,
+                            List<GraphEvidence> evidences) {}
+
+    public record GraphEvidence(Long claimId, Long fileUploadId, String fileMd5, String fileName,
+                                Integer chunkId, String evidenceText, Double confidence) {}
 
     public record DocumentOption(Long id, String fileMd5, String fileName) {}
 
-    public record GraphStats(int entityCount, int relationCount, int documentCount) {}
+    public record GraphStats(int entityCount, int relationCount, int documentCount, int disputedRelationCount) {}
 
     private record OrganizationScopeSelection(String scopeId, String tagId, String name, ScopeType scopeType,
                                               List<FileUpload> files) {
@@ -240,6 +250,58 @@ public class OrganizationKnowledgeGraphService {
 
         private GraphNode response() {
             return new GraphNode(id, name, type, degree);
+        }
+    }
+
+    private record FactKey(String sourceKey, String predicate, String targetKey) {
+        private static FactKey of(KnowledgeGraphStoreService.OrganizationRelation relation) {
+            return new FactKey(relation.sourceKey(), normalizePredicate(relation.predicate()), relation.targetKey());
+        }
+    }
+
+    private record StatementKey(String sourceKey, String predicate) {}
+
+    private static String normalizePredicate(String value) {
+        return Objects.toString(value, "").trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", "");
+    }
+
+    private static final class MutableFact {
+        private final String sourceKey;
+        private final String sourceName;
+        private final String sourceType;
+        private final String targetKey;
+        private final String targetName;
+        private final String targetType;
+        private final String predicate;
+        private final List<GraphEvidence> evidences = new ArrayList<>();
+
+        private MutableFact(KnowledgeGraphStoreService.OrganizationRelation relation) {
+            sourceKey = relation.sourceKey();
+            sourceName = relation.sourceName();
+            sourceType = relation.sourceType();
+            targetKey = relation.targetKey();
+            targetName = relation.targetName();
+            targetType = relation.targetType();
+            predicate = relation.predicate();
+        }
+
+        private void addEvidence(KnowledgeGraphStoreService.OrganizationRelation relation) {
+            evidences.add(new GraphEvidence(relation.candidateId(), relation.fileUploadId(), relation.fileMd5(),
+                    relation.fileName(), relation.chunkId(), relation.evidence(), relation.confidence()));
+        }
+
+        private StatementKey statementKey() {
+            return new StatementKey(sourceKey, normalizePredicate(predicate));
+        }
+
+        private GraphEdge response(boolean disputed) {
+            GraphEvidence primary = evidences.stream().max(Comparator.comparingDouble(
+                    value -> value.confidence() == null ? 0.0 : value.confidence())).orElseThrow();
+            int documents = (int) evidences.stream().map(GraphEvidence::fileUploadId).distinct().count();
+            return new GraphEdge("claim-" + primary.claimId(), sourceKey, targetKey, predicate,
+                    primary.confidence(), primary.chunkId(), primary.evidenceText(), primary.fileUploadId(),
+                    primary.fileMd5(), primary.fileName(), evidences.size(), documents, disputed,
+                    List.copyOf(evidences));
         }
     }
 }

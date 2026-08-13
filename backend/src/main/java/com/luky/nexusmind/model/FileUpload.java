@@ -77,6 +77,9 @@ public class FileUpload {
     @Column(name = "graph_error", length = 1000)
     private String graphError;
 
+    @Column(name = "graph_prompt_template_id")
+    private Long graphPromptTemplateId;
+
     /**
      * 文件上传的创建时间
      * 自动记录文件上传开始的时间

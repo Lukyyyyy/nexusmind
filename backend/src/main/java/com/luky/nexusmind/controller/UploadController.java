@@ -114,6 +114,7 @@ public class UploadController {
             @RequestParam(value = "orgTag", required = false) String orgTag,
             @RequestParam(value = "isPublic", required = false, defaultValue = "false") boolean isPublic,
             @RequestParam(value = "graphEnabled", required = false) Boolean graphEnabled,
+            @RequestParam(value = "graphPromptTemplateId", required = false) Long graphPromptTemplateId,
             @RequestParam("file") MultipartFile file,
             @RequestAttribute("userId") String userId) throws IOException {
         
@@ -166,7 +167,8 @@ public class UploadController {
         
             LogUtils.logFileOperation(userId, "UPLOAD_CHUNK", fileName, fileMd5, "PROCESSING");
         
-            uploadService.uploadChunk(fileMd5, chunkIndex, totalSize, fileName, file, orgTag, isPublic, graphEnabled, userId);
+            uploadService.uploadChunk(fileMd5, chunkIndex, totalSize, fileName, file, orgTag, isPublic,
+                    graphEnabled, graphPromptTemplateId, userId);
             
             int actualTotalChunks = resolveTotalChunks(totalChunks, totalSize);
             List<Integer> uploadedChunks = uploadService.getUploadedChunks(fileMd5, userId, actualTotalChunks);
