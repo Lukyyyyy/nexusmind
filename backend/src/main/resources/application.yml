@@ -88,6 +88,10 @@ spring:
   codec:
     max-in-memory-size: 16MB    # 增加编解码大小限制
 
+chat:
+  history-cache:
+    ttl: ${CHAT_HISTORY_CACHE_TTL:2h}
+
 
 minio:
   endpoint: http://localhost:9000

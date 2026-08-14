@@ -28,13 +28,15 @@ class ChatSessionServiceTest {
     private InMemoryUserRepository users;
     private InMemoryChatSessionRepository sessions;
     private InMemoryChatMessageRepository messages;
+    private InMemoryChatHistoryCache historyCache;
 
     @BeforeEach
     void setUp() {
         users = new InMemoryUserRepository();
         sessions = new InMemoryChatSessionRepository();
         messages = new InMemoryChatMessageRepository();
-        service = new ChatSessionService(users.proxy(), sessions.proxy(), messages.proxy());
+        historyCache = new InMemoryChatHistoryCache();
+        service = new ChatSessionService(users.proxy(), sessions.proxy(), messages.proxy(), historyCache);
     }
 
     @Test
@@ -166,6 +168,45 @@ class ChatSessionServiceTest {
         assertEquals("a11", history.get(19).get("content"));
     }
 
+    @Test
+    void historyCacheMissLoadsMysqlOnceAndThenServesTheCache() {
+        users.save(user("alice", 1L));
+        ChatSession session = service.createSession("alice");
+        service.appendCompletedExchange("alice", session.getId(), "问题", "回答", null);
+        historyCache.evict(session.getId());
+
+        List<Map<String, String>> first = service.getRecentHistory("alice", session.getId(), 20);
+        List<Map<String, String>> second = service.getRecentHistory("alice", session.getId(), 20);
+
+        assertEquals(first, second);
+        assertEquals(1, messages.latestQueries);
+        assertEquals(1, historyCache.puts);
+    }
+
+    @Test
+    void completedExchangeUpdatesCacheWithoutAnotherMysqlRead() {
+        users.save(user("alice", 1L));
+        ChatSession session = service.createSession("alice");
+
+        service.appendCompletedExchange("alice", session.getId(), "问题", "回答", null);
+        List<Map<String, String>> history = service.getRecentHistory("alice", session.getId(), 20);
+
+        assertEquals(List.of("问题", "回答"), history.stream().map(item -> item.get("content")).toList());
+        assertEquals(0, messages.latestQueries);
+    }
+
+    @Test
+    void deletingSessionEvictsItsHistoryCache() {
+        users.save(user("alice", 1L));
+        ChatSession session = service.createSession("alice");
+        service.appendCompletedExchange("alice", session.getId(), "问题", "回答", null);
+        assertTrue(historyCache.values.containsKey(session.getId()));
+
+        service.deleteSession("alice", session.getId());
+
+        assertFalse(historyCache.values.containsKey(session.getId()));
+    }
+
     private static User user(String username, Long id) {
         User user = new User();
         user.setId(id);
@@ -257,6 +298,7 @@ class ChatSessionServiceTest {
     private static class InMemoryChatMessageRepository {
         private final List<ChatMessage> rows = new ArrayList<>();
         private long nextId = 1L;
+        private int latestQueries;
 
         ChatMessageRepository proxy() {
             return ChatSessionServiceTest.proxy(ChatMessageRepository.class, (proxy, method, args) -> switch (method.getName()) {
@@ -287,11 +329,58 @@ class ChatSessionServiceTest {
         }
 
         List<ChatMessage> findLatest20(Long sessionId) {
+            latestQueries++;
             return rows.stream()
                     .filter(message -> message.getSession().getId().equals(sessionId))
                     .sorted(Comparator.comparing(ChatMessage::getCreatedAt).reversed())
                     .limit(20)
                     .toList();
+        }
+    }
+
+    private static class InMemoryChatHistoryCache implements ChatHistoryCache {
+        private final Map<Long, List<Map<String, String>>> values = new HashMap<>();
+        private int puts;
+
+        @Override
+        public Optional<List<Map<String, String>>> getRecentHistory(Long sessionId, int limit) {
+            List<Map<String, String>> history = values.get(sessionId);
+            if (history == null) {
+                return Optional.empty();
+            }
+            int fromIndex = Math.max(0, history.size() - Math.min(limit, MAX_MESSAGES));
+            return Optional.of(List.copyOf(history.subList(fromIndex, history.size())));
+        }
+
+        @Override
+        public void putRecentHistory(Long sessionId, List<Map<String, String>> history) {
+            puts++;
+            values.put(sessionId, tail(history));
+        }
+
+        @Override
+        public void appendExchange(Long sessionId,
+                                   String userMessage,
+                                   String assistantResponse,
+                                   boolean seedIfMissing) {
+            List<Map<String, String>> existing = values.get(sessionId);
+            if (existing == null && !seedIfMissing) {
+                return;
+            }
+            List<Map<String, String>> updated = new ArrayList<>(existing == null ? List.of() : existing);
+            updated.add(Map.of("role", "user", "content", userMessage));
+            updated.add(Map.of("role", "assistant", "content", assistantResponse));
+            values.put(sessionId, tail(updated));
+        }
+
+        @Override
+        public void evict(Long sessionId) {
+            values.remove(sessionId);
+        }
+
+        private List<Map<String, String>> tail(List<Map<String, String>> history) {
+            int fromIndex = Math.max(0, history.size() - MAX_MESSAGES);
+            return List.copyOf(history.subList(fromIndex, history.size()));
         }
     }
 }

@@ -7,9 +7,12 @@ import com.luky.nexusmind.model.User;
 import com.luky.nexusmind.repository.ChatMessageRepository;
 import com.luky.nexusmind.repository.ChatSessionRepository;
 import com.luky.nexusmind.repository.UserRepository;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.LocalDateTime;
 import java.util.Comparator;
@@ -25,13 +28,23 @@ public class ChatSessionService {
     private final UserRepository userRepository;
     private final ChatSessionRepository chatSessionRepository;
     private final ChatMessageRepository chatMessageRepository;
+    private final ChatHistoryCache chatHistoryCache;
+
+    @Autowired
+    public ChatSessionService(UserRepository userRepository,
+                              ChatSessionRepository chatSessionRepository,
+                              ChatMessageRepository chatMessageRepository,
+                              ChatHistoryCache chatHistoryCache) {
+        this.userRepository = userRepository;
+        this.chatSessionRepository = chatSessionRepository;
+        this.chatMessageRepository = chatMessageRepository;
+        this.chatHistoryCache = chatHistoryCache;
+    }
 
     public ChatSessionService(UserRepository userRepository,
                               ChatSessionRepository chatSessionRepository,
                               ChatMessageRepository chatMessageRepository) {
-        this.userRepository = userRepository;
-        this.chatSessionRepository = chatSessionRepository;
-        this.chatMessageRepository = chatMessageRepository;
+        this(userRepository, chatSessionRepository, chatMessageRepository, ChatHistoryCache.noop());
     }
 
     @Transactional
@@ -69,6 +82,7 @@ public class ChatSessionService {
         ChatSession session = getOwnedActiveSession(username, sessionId);
         session.setDeletedAt(LocalDateTime.now());
         chatSessionRepository.save(session);
+        afterCommit(() -> chatHistoryCache.evict(sessionId));
     }
 
     @Transactional(readOnly = true)
@@ -80,10 +94,19 @@ public class ChatSessionService {
     @Transactional(readOnly = true)
     public List<Map<String, String>> getRecentHistory(String username, Long sessionId, int limit) {
         ChatSession session = getOwnedActiveSession(username, sessionId);
+        int effectiveLimit = Math.min(Math.max(0, limit), ChatHistoryCache.MAX_MESSAGES);
+        if (effectiveLimit == 0) {
+            return List.of();
+        }
+
+        var cached = chatHistoryCache.getRecentHistory(session.getId(), effectiveLimit);
+        if (cached.isPresent()) {
+            return cached.get();
+        }
+
         List<ChatMessage> latestMessages = chatMessageRepository.findTop20BySessionIdOrderByCreatedAtDesc(session.getId());
-        return latestMessages.stream()
+        List<Map<String, String>> history = latestMessages.stream()
                 .sorted(Comparator.comparing(ChatMessage::getCreatedAt))
-                .limit(Math.max(0, limit))
                 .map(message -> {
                     Map<String, String> item = new HashMap<>();
                     item.put("role", message.getRole());
@@ -91,6 +114,9 @@ public class ChatSessionService {
                     return item;
                 })
                 .toList();
+        chatHistoryCache.putRecentHistory(session.getId(), history);
+        int fromIndex = Math.max(0, history.size() - effectiveLimit);
+        return List.copyOf(history.subList(fromIndex, history.size()));
     }
 
     @Transactional
@@ -132,6 +158,9 @@ public class ChatSessionService {
             session.setTitleGenerated(true);
         }
         chatSessionRepository.save(session);
+        boolean seedCacheIfMissing = wasEmpty;
+        afterCommit(() -> chatHistoryCache.appendExchange(
+                sessionId, userMessage, assistantResponse, seedCacheIfMissing));
         return wasEmpty;
     }
 
@@ -204,5 +233,19 @@ public class ChatSessionService {
             return value;
         }
         return value.substring(0, maxLength);
+    }
+
+    private void afterCommit(Runnable action) {
+        if (TransactionSynchronizationManager.isSynchronizationActive()
+                && TransactionSynchronizationManager.isActualTransactionActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    action.run();
+                }
+            });
+            return;
+        }
+        action.run();
     }
 }
