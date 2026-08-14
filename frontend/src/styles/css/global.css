@@ -76,6 +76,7 @@ body {
   padding: 0 !important;
 }
 
+.nexus-global-header .n-button--primary-type,
 .nexus-global-tab .n-button--primary-type {
   color: #fff;
 }
