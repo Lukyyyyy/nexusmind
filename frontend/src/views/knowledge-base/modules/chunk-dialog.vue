@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import type { DataTableColumns, PaginationProps } from 'naive-ui';
+import type { Directive } from 'vue';
+import { h } from 'vue';
 import { VueMarkdownIt } from 'vue-markdown-shiki';
 
 defineOptions({
@@ -17,8 +19,10 @@ const props = defineProps<{
 const loading = ref(false);
 const detailLoading = ref(false);
 const keyword = ref('');
+const searchedKeyword = ref('');
 const chunkPage = ref<Api.KnowledgeBase.DocumentChunkPage | null>(null);
 const selectedChunk = ref<Api.KnowledgeBase.DocumentChunk | null>(null);
+let detailRequestId = 0;
 const pagination = reactive<PaginationProps>({
   page: 1,
   pageSize: 20,
@@ -52,6 +56,7 @@ const columns: DataTableColumns<Api.KnowledgeBase.DocumentChunk> = [
   {
     key: 'contentPreview',
     title: '内容预览',
+    render: row => renderHighlightedText(row.contentPreview),
     ellipsis: {
       tooltip: true
     }
@@ -67,7 +72,7 @@ async function fetchChunks() {
     params: {
       page: Number(pagination.page || 1) - 1,
       size: pagination.pageSize,
-      keyword: keyword.value || undefined
+      keyword: searchedKeyword.value || undefined
     }
   });
 
@@ -85,10 +90,13 @@ async function fetchChunks() {
 }
 
 async function fetchChunkDetail(chunkId: number) {
+  const requestId = ++detailRequestId;
   detailLoading.value = true;
   const { error, data } = await request<Api.KnowledgeBase.DocumentChunk>({
     url: `/documents/${props.fileMd5}/chunks/${chunkId}`
   });
+
+  if (requestId !== detailRequestId) return;
 
   if (!error) {
     selectedChunk.value = data;
@@ -98,6 +106,7 @@ async function fetchChunkDetail(chunkId: number) {
 }
 
 function handleSearch() {
+  searchedKeyword.value = keyword.value.trim();
   pagination.page = 1;
   fetchChunks();
 }
@@ -128,6 +137,129 @@ function formatByteSize(size: number) {
   if (size < 1024 * 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
   return `${(size / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
+
+function getHighlightParts(content: string, searchTerm: string) {
+  const term = searchTerm.trim();
+  if (!term) return [{ content, highlighted: false }];
+
+  const parts: Array<{ content: string; highlighted: boolean }> = [];
+  const normalizedContent = content.toLocaleLowerCase();
+  const normalizedTerm = term.toLocaleLowerCase();
+  let start = 0;
+  let matchIndex = normalizedContent.indexOf(normalizedTerm);
+
+  while (matchIndex !== -1) {
+    if (matchIndex > start) {
+      parts.push({ content: content.slice(start, matchIndex), highlighted: false });
+    }
+    parts.push({ content: content.slice(matchIndex, matchIndex + term.length), highlighted: true });
+    start = matchIndex + term.length;
+    matchIndex = normalizedContent.indexOf(normalizedTerm, start);
+  }
+
+  if (start < content.length) {
+    parts.push({ content: content.slice(start), highlighted: false });
+  }
+
+  return parts.length > 0 ? parts : [{ content, highlighted: false }];
+}
+
+function renderHighlightedText(content: string) {
+  return h(
+    'span',
+    getHighlightParts(content, searchedKeyword.value).map(part =>
+      part.highlighted ? h('mark', { class: 'chunk-search-highlight' }, part.content) : part.content
+    )
+  );
+}
+
+function removeHighlights(element: HTMLElement) {
+  element.querySelectorAll('mark[data-chunk-search-highlight]').forEach(mark => {
+    mark.replaceWith(document.createTextNode(mark.textContent || ''));
+  });
+  element.normalize();
+}
+
+function highlightElement(element: HTMLElement, searchTerm: string) {
+  removeHighlights(element);
+
+  const term = searchTerm.trim();
+  if (!term) return;
+
+  const textNodes: Text[] = [];
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
+    acceptNode: node => {
+      const parent = node.parentElement;
+      if (!node.textContent || parent?.closest('script, style, mark[data-chunk-search-highlight]')) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    }
+  });
+
+  let currentNode = walker.nextNode();
+  while (currentNode) {
+    textNodes.push(currentNode as Text);
+    currentNode = walker.nextNode();
+  }
+
+  textNodes.forEach(textNode => {
+    const text = textNode.data;
+    const parts = getHighlightParts(text, term);
+    if (!parts.some(part => part.highlighted)) return;
+
+    const fragment = document.createDocumentFragment();
+    parts.forEach(part => {
+      if (part.highlighted) {
+        const mark = document.createElement('mark');
+        mark.dataset.chunkSearchHighlight = '';
+        mark.className = 'chunk-search-highlight';
+        mark.textContent = part.content;
+        fragment.append(mark);
+      } else {
+        fragment.append(document.createTextNode(part.content));
+      }
+    });
+    textNode.replaceWith(fragment);
+  });
+}
+
+interface HighlightObserverState {
+  keyword: string;
+  observer: MutationObserver;
+}
+
+const highlightObserverStates = new WeakMap<HTMLElement, HighlightObserverState>();
+
+function refreshObservedHighlight(element: HTMLElement, state: HighlightObserverState) {
+  // Markdown rendering is asynchronous. Pause observation while adding marks so
+  // our own DOM changes do not recursively trigger another highlight pass.
+  state.observer.disconnect();
+  highlightElement(element, state.keyword);
+  state.observer.observe(element, { childList: true, characterData: true, subtree: true });
+}
+
+const vHighlight: Directive<HTMLElement, string> = {
+  mounted: (element, binding) => {
+    const state: HighlightObserverState = {
+      keyword: binding.value,
+      observer: new MutationObserver(() => refreshObservedHighlight(element, state))
+    };
+    highlightObserverStates.set(element, state);
+    refreshObservedHighlight(element, state);
+  },
+  updated: (element, binding) => {
+    const state = highlightObserverStates.get(element);
+    if (!state) return;
+
+    state.keyword = binding.value;
+    refreshObservedHighlight(element, state);
+  },
+  beforeUnmount: element => {
+    highlightObserverStates.get(element)?.observer.disconnect();
+    highlightObserverStates.delete(element);
+  }
+};
 
 function formatParseEngine(engine?: Api.KnowledgeBase.UploadTask['actualParseEngine']) {
   const record: Record<string, string> = {
@@ -164,8 +296,11 @@ watch(visible, show => {
   if (show) {
     pagination.page = 1;
     keyword.value = '';
+    searchedKeyword.value = '';
     fetchChunks();
   } else {
+    detailRequestId += 1;
+    detailLoading.value = false;
     chunkPage.value = null;
     selectedChunk.value = null;
   }
@@ -208,6 +343,7 @@ watch(visible, show => {
       <div class="chunk-main grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(360px,0.85fr)] gap-12px overflow-hidden lt-lg:grid-cols-1">
         <div class="min-h-0 overflow-hidden">
           <NDataTable
+            :key="`chunks-${searchedKeyword}`"
             size="small"
             striped
             remote
@@ -245,10 +381,20 @@ watch(visible, show => {
           </div>
           <div class="chunk-detail-scroll min-h-0 flex-1 overflow-y-auto">
             <NEmpty v-if="!selectedChunk" description="暂无切片内容" class="py-80px" />
-            <div v-else-if="isSelectedMarkdown" class="markdown-body chunk-markdown p-12px text-13px leading-6">
+            <div
+              v-else-if="isSelectedMarkdown"
+              :key="`markdown-${selectedChunk.chunkId}-${searchedKeyword}`"
+              v-highlight="searchedKeyword"
+              class="markdown-body chunk-markdown p-12px text-13px leading-6"
+            >
               <VueMarkdownIt :content="selectedChunk.content || ''" />
             </div>
-            <pre v-else class="m-0 whitespace-pre-wrap break-words p-12px text-13px leading-6">{{
+            <pre
+              v-else
+              :key="`plain-text-${selectedChunk.chunkId}-${searchedKeyword}`"
+              v-highlight="searchedKeyword"
+              class="m-0 whitespace-pre-wrap break-words p-12px text-13px leading-6"
+            >{{
               selectedChunk.content
             }}</pre>
           </div>
@@ -287,5 +433,12 @@ watch(visible, show => {
   max-width: 100%;
   overflow-x: auto;
   white-space: nowrap;
+}
+
+:deep(.chunk-search-highlight) {
+  border-radius: 2px;
+  background-color: #fadb14;
+  color: #1f2329;
+  box-shadow: 0 0 0 1px rgb(250 173 20 / 35%);
 }
 </style>
