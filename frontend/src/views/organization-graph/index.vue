@@ -16,6 +16,9 @@ const selectedFileIds = ref<number[]>([]);
 const graph = ref<Api.KnowledgeGraph.OrganizationGraph | null>(null);
 const selectedNode = ref<Api.KnowledgeGraph.GraphNode | null>(null);
 const selectedEdge = ref<Api.KnowledgeGraph.OrganizationGraphEdge | null>(null);
+const workspacePanel = ref<HTMLElement | null>(null);
+const detailPanel = ref<HTMLElement | null>(null);
+let nodeDetailScrollTop = 0;
 
 const organizationOptions = computed(() =>
   organizations.value.map(item => ({
@@ -93,6 +96,19 @@ function handleNodeSelect(node: Api.KnowledgeGraph.GraphNode) {
 function handleEdgeSelect(edge: Api.KnowledgeGraph.GraphEdge) {
   selectedEdge.value = graph.value?.edges.find(item => item.id === edge.id) || null;
   selectedNode.value = null;
+}
+
+async function showRelationDetail(edge: Api.KnowledgeGraph.OrganizationGraphEdge) {
+  nodeDetailScrollTop = detailPanel.value?.scrollTop || 0;
+  selectedEdge.value = edge;
+  await nextTick();
+  if (detailPanel.value) detailPanel.value.scrollTop = 0;
+}
+
+async function returnToNodeDetail() {
+  selectedEdge.value = null;
+  await nextTick();
+  if (detailPanel.value) detailPanel.value.scrollTop = nodeDetailScrollTop;
 }
 
 function clearSelection() {
@@ -199,21 +215,40 @@ onMounted(async () => {
     </div>
 
     <NSpin :show="loading" class="graph-spinner">
-      <div v-if="graph" class="workspace-grid">
+      <div v-if="graph" ref="workspacePanel" class="workspace-grid">
         <section class="canvas-panel">
           <KnowledgeGraphCanvas
             :nodes="graph.nodes"
             :edges="canvasEdges"
             :show-inspector="false"
+            :fullscreen-target="workspacePanel"
             @node-select="handleNodeSelect"
             @edge-select="handleEdgeSelect"
             @selection-clear="clearSelection"
           />
         </section>
 
-        <aside class="detail-panel">
+        <aside
+          ref="detailPanel"
+          class="detail-panel"
+          :class="{ 'detail-panel--empty': !selectedNode && !selectedEdge }"
+        >
           <template v-if="selectedEdge">
-            <div class="detail-kicker">关系详情</div>
+            <div class="detail-heading">
+              <NButton
+                v-if="selectedNode"
+                quaternary
+                circle
+                size="tiny"
+                class="detail-back"
+                aria-label="返回实体详情"
+                title="返回实体详情"
+                @click="returnToNodeDetail"
+              >
+                <template #icon><SvgIcon icon="mdi:chevron-left" /></template>
+              </NButton>
+              <div class="detail-kicker">关系详情</div>
+            </div>
             <h2>{{ selectedEdge.predicate }}</h2>
             <NText depth="3">
               最高置信度 {{ Math.round(selectedEdge.confidence * 100) }}%
@@ -262,7 +297,7 @@ onMounted(async () => {
                 :key="edge.id"
                 type="button"
                 class="relation-row"
-                @click="selectedEdge = edge; selectedNode = null"
+                @click="showRelationDetail(edge)"
               >
                 <span>{{ edge.predicate }}</span>
                 <small>{{ edge.fileName }}</small>
@@ -386,6 +421,26 @@ onMounted(async () => {
   align-items: stretch;
 }
 
+.workspace-grid:fullscreen {
+  display: block;
+  padding: 20px;
+  background: #f8fafc;
+}
+
+.workspace-grid:fullscreen .canvas-panel { height: 100%; }
+.workspace-grid:fullscreen .detail-panel {
+  position: absolute;
+  z-index: 2;
+  top: 112px;
+  right: 32px;
+  width: min(380px, calc(100vw - 64px));
+  height: auto;
+  max-height: calc(100vh - 144px);
+  border-color: rgb(148 163 184 / 24%);
+  box-shadow: 0 12px 32px rgb(15 23 42 / 16%);
+}
+.workspace-grid:fullscreen .detail-panel--empty { display: none; }
+
 .canvas-panel, .detail-panel {
   min-width: 0;
   border: 1px solid #e3e8ef;
@@ -394,7 +449,8 @@ onMounted(async () => {
 }
 
 .canvas-panel { height: 100%; overflow: hidden; }
-.canvas-panel :deep(.graph-frame) { border: 0; border-radius: 0; box-shadow: none; }
+.canvas-panel :deep(.graph-frame) { display: flex; flex-direction: column; border: 0; border-radius: 0; box-shadow: none; }
+.canvas-panel :deep(.graph-content) { min-height: 0; flex: 1; }
 .canvas-panel :deep(.graph-frame),
 .canvas-panel :deep(.graph-canvas),
 .canvas-panel :deep(.graph-empty) { height: 100%; min-height: 0; }
@@ -407,6 +463,9 @@ onMounted(async () => {
   overflow-y: auto;
 }
 
+.detail-heading { display: flex; align-items: center; gap: 4px; margin: -2px 0 12px; }
+.detail-heading .detail-kicker { margin: 0; }
+.detail-back { margin-left: -6px; color: #687386; }
 .detail-kicker { margin-bottom: 12px; color: #768196; font-size: 12px; font-weight: 600; }
 .detail-panel h2 { margin: 8px 0 4px; color: #182235; font-size: 20px; }
 .detail-panel h3 { margin: 18px 0 9px; color: #263247; font-size: 14px; }
@@ -444,6 +503,7 @@ onMounted(async () => {
 :global(html.dark) .relation-row { border-color: #303b4b; background: #1b2431; }
 :global(html.dark) .route-entity { border-color: #303b4b; background: #1b2431; }
 :global(html.dark) .route-entity strong { color: #dce3ec; }
+:global(html.dark) .workspace-grid:fullscreen { background: #111827; }
 
 @media (max-width: 1100px) {
   .organization-graph-page { height: auto; min-height: 100%; overflow: visible; }

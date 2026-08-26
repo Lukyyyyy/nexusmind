@@ -10,6 +10,7 @@ const props = withDefaults(
     nodes: Api.KnowledgeGraph.GraphNode[];
     edges: Api.KnowledgeGraph.GraphEdge[];
     showInspector?: boolean;
+    fullscreenTarget?: HTMLElement | null;
   }>(),
   { showInspector: true }
 );
@@ -27,6 +28,7 @@ const selectedType = ref<string | null>(null);
 const selectedEdgeId = ref<string | null>(null);
 const selectedNodeId = ref<string | null>(null);
 const rendering = ref(false);
+const isFullscreen = ref(false);
 let graph: Graph | null = null;
 
 const typeColors: Record<string, string> = {
@@ -202,7 +204,7 @@ async function createGraph() {
   graph = new Graph({
     container: containerRef.value,
     autoResize: true,
-    padding: 48,
+    padding: 64,
     autoFit: { type: 'view', options: { when: 'always', direction: 'both' } },
     animation: false,
     data: graphData(),
@@ -262,8 +264,11 @@ async function refreshGraph() {
   await createGraph();
 }
 
-async function fitView() {
-  await graph?.fitView({ when: 'always', direction: 'both' }, { duration: 300 });
+async function fitView(animated = true) {
+  await graph?.fitView(
+    { when: 'always', direction: 'both' },
+    animated ? { duration: 300 } : undefined
+  );
 }
 
 async function relayout() {
@@ -313,7 +318,17 @@ async function clearSelection() {
 async function toggleFullscreen() {
   if (!frameRef.value) return;
   if (document.fullscreenElement) await document.exitFullscreen();
-  else await frameRef.value.requestFullscreen();
+  else await (props.fullscreenTarget || frameRef.value).requestFullscreen();
+}
+
+function syncFullscreenState() {
+  isFullscreen.value = document.fullscreenElement === (props.fullscreenTarget || frameRef.value);
+  requestAnimationFrame(() => {
+    requestAnimationFrame(async () => {
+      graph?.resize();
+      await fitView(false);
+    });
+  });
 }
 
 watch(
@@ -326,8 +341,14 @@ watch(
   { deep: true }
 );
 
-onMounted(refreshGraph);
-onBeforeUnmount(() => graph?.destroy());
+onMounted(() => {
+  document.addEventListener('fullscreenchange', syncFullscreenState);
+  refreshGraph();
+});
+onBeforeUnmount(() => {
+  document.removeEventListener('fullscreenchange', syncFullscreenState);
+  graph?.destroy();
+});
 </script>
 
 <template>
@@ -353,9 +374,9 @@ onBeforeUnmount(() => graph?.destroy());
         </NText>
       </div>
       <NSpace :size="8">
-        <NButton size="small" secondary @click="fitView">适应画布</NButton>
+        <NButton size="small" secondary @click="fitView()">适应画布</NButton>
         <NButton size="small" secondary :loading="rendering" @click="relayout">重新布局</NButton>
-        <NButton size="small" secondary @click="toggleFullscreen">全屏</NButton>
+        <NButton size="small" secondary @click="toggleFullscreen">{{ isFullscreen ? '退出全屏' : '全屏' }}</NButton>
       </NSpace>
     </div>
 
