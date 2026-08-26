@@ -16,6 +16,8 @@ import GraphReviewDialog from './modules/graph-review-dialog.vue';
 
 const appStore = useAppStore();
 const authStore = useAuthStore();
+const chatStore = useChatStore();
+const router = useRouter();
 
 // 文件预览相关状态
 const previewVisible = ref(false);
@@ -94,6 +96,9 @@ function handleGraphView(row: Api.KnowledgeBase.UploadTask) {
 
 function getFileActionOptions(row: Api.KnowledgeBase.UploadTask): DropdownOption[] {
   return [
+    ...(row.processingState === 'SUCCEEDED' && row.id
+      ? [{ label: '就此文档提问', key: 'ask' }]
+      : []),
     ...(row.processingState === 'FAILED'
       ? [
           {
@@ -121,6 +126,11 @@ function getFileActionOptions(row: Api.KnowledgeBase.UploadTask): DropdownOption
 }
 
 function handleFileAction(key: string, row: Api.KnowledgeBase.UploadTask) {
+  if (key === 'ask') {
+    handleAskDocument(row);
+    return;
+  }
+
   if (key === 'retry') {
     handleRetryProcessing(row);
     return;
@@ -138,6 +148,14 @@ function handleFileAction(key: string, row: Api.KnowledgeBase.UploadTask) {
   }
 
   if (key === 'delete') confirmDelete(row);
+}
+
+async function handleAskDocument(row: Api.KnowledgeBase.UploadTask) {
+  if (!row.id) return;
+  const session = await chatStore.createSession({ type: 'DOCUMENTS', documentIds: [row.id] });
+  if (!session) return;
+  await router.push({ name: 'chat' });
+  window.$message?.success(`已限定为“${row.fileName}”`);
 }
 
 function graphActionLabel(row: Api.KnowledgeBase.UploadTask) {

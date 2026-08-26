@@ -292,6 +292,7 @@ declare namespace Api {
     }
 
     interface UploadTask {
+      id?: number;
       file: File;
       chunk: Blob | null;
       fileMd5: string;
@@ -561,6 +562,27 @@ declare namespace Api {
   }
 
   namespace Chat {
+    type ScopeType = 'ALL' | 'PRIVATE' | 'ORGANIZATION' | 'DOCUMENTS';
+
+    interface ScopeSelection {
+      type: ScopeType;
+      orgTag?: string | null;
+      documentIds?: number[];
+    }
+
+    interface ScopeView {
+      type: ScopeType;
+      label: string;
+      orgTag?: string | null;
+      documentIds: number[];
+      details: string[];
+    }
+
+    interface ScopeOptions {
+      privateAvailable: boolean;
+      organizations: Array<{ tagId: string; name: string; documentCount: number }>;
+      documents: Array<{ id: number; fileMd5: string; fileName: string; orgTag?: string | null }>;
+    }
     interface AgentStep {
       type: 'agent_step';
       stepId: string;
@@ -581,9 +603,11 @@ declare namespace Api {
 
     interface Output {
       chunk: string;
-      type?: 'completion' | 'stop';
+      content?: string;
+      type?: 'completion' | 'stop' | 'content_replaced' | 'title_updated';
       status?: 'finished';
       sessionId?: number;
+      title?: string;
       error?: string;
     }
 
@@ -597,6 +621,7 @@ declare namespace Api {
       titleGenerated: boolean;
       createdAt: string;
       updatedAt: string;
+      scope: ScopeView;
     }
 
     interface SendPayload {
@@ -620,6 +645,9 @@ declare namespace Api {
       thinkingStartedAt?: number;
       /** 首个回答内容到达时冻结的思考耗时 */
       thinkingDurationMs?: number;
+      sessionId?: number;
+      scope?: ScopeView;
+      showScope?: boolean;
     }
 
     interface Token {

@@ -56,7 +56,12 @@ async function getList() {
         }
       });
   if (!error) {
-    list.value = data;
+    const seenSessions = new Set<number>();
+    list.value = (data || []).map(message => {
+      const showScope = message.sessionId != null && !seenSessions.has(message.sessionId);
+      if (message.sessionId != null) seenSessions.add(message.sessionId);
+      return { ...message, showScope };
+    });
     scrollToBottom();
   }
   loading.value = false;

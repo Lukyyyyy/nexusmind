@@ -3,10 +3,12 @@ import { useWebSocket } from '@vueuse/core';
 export const useChatStore = defineStore(SetupStoreId.Chat, () => {
   const input = ref<Api.Chat.Input>({ message: '' });
   const sessions = ref<Api.Chat.Session[]>([]);
+  const draftSession = ref<Api.Chat.Session | null>(null);
   const activeSessionId = ref<number | null>(null);
   const messages = ref<Api.Chat.Message[]>([]);
   const loading = ref(false);
   const sessionLoading = ref(false);
+  let sessionsRequestId = 0;
 
   const store = useAuthStore();
 
@@ -22,7 +24,11 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
 
   const scrollToBottom = ref<null | (() => void)>(null);
 
-  const activeSession = computed(() => sessions.value.find(item => item.id === activeSessionId.value) || null);
+  const activeSession = computed(() =>
+    draftSession.value?.id === activeSessionId.value
+      ? draftSession.value
+      : sessions.value.find(item => item.id === activeSessionId.value) || null
+  );
 
   function normalizeMessage(message: Api.Chat.Message): Api.Chat.Message {
     if (typeof message.agentTrace !== 'string') return message;
@@ -34,26 +40,49 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
   }
 
   async function loadSessions() {
+    const requestId = ++sessionsRequestId;
     sessionLoading.value = true;
     const { error, data } = await request<Api.Chat.Session[]>({ url: 'chat/sessions' });
-    if (!error) {
-      sessions.value = data || [];
-      if (!activeSessionId.value && sessions.value.length) {
-        activeSessionId.value = sessions.value[0].id;
+    if (!error && requestId === sessionsRequestId) {
+      const loaded = data || [];
+      const draft = draftSession.value;
+      const draftPersisted = draft && loaded.some(item => item.id === draft.id);
+      const draftVisible = draft && sessions.value.some(item => item.id === draft.id);
+      sessions.value = draft && draftVisible && !draftPersisted
+        ? [draft, ...loaded.filter(item => item.id !== draft.id)]
+        : loaded;
+      if (draftPersisted) {
+        draftSession.value = null;
       }
     }
-    sessionLoading.value = false;
+    if (requestId === sessionsRequestId) sessionLoading.value = false;
   }
 
-  async function createSession() {
+  async function createSession(scope?: Api.Chat.ScopeSelection) {
     const { error, data } = await request<Api.Chat.Session>({
       url: 'chat/sessions',
-      method: 'post'
+      method: 'post',
+      data: scope
     });
     if (error) return null;
-    sessions.value = [data, ...sessions.value.filter(item => item.id !== data.id)];
+    draftSession.value = data;
     activeSessionId.value = data.id;
     messages.value = [];
+    return data;
+  }
+
+  async function applyScope(scope: Api.Chat.ScopeSelection) {
+    if (!activeSessionId.value || messages.value.length > 0) {
+      return createSession(scope);
+    }
+    const { error, data } = await request<Api.Chat.Session>({
+      url: `chat/sessions/${activeSessionId.value}/scope`,
+      method: 'patch',
+      data: scope
+    });
+    if (error) return null;
+    if (draftSession.value?.id === data.id) draftSession.value = data;
+    else sessions.value = sessions.value.map(item => (item.id === data.id ? data : item));
     return data;
   }
 
@@ -83,8 +112,18 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
       data: { title } satisfies Api.Chat.SessionUpdate
     });
     if (error) return false;
+    if (draftSession.value?.id === sessionId) draftSession.value = data;
     sessions.value = sessions.value.map(item => (item.id === sessionId ? data : item));
     return true;
+  }
+
+  function applySessionTitle(sessionId: number, title: string) {
+    if (draftSession.value?.id === sessionId) {
+      draftSession.value = { ...draftSession.value, title };
+      sessions.value = [draftSession.value, ...sessions.value.filter(item => item.id !== sessionId)];
+      return;
+    }
+    sessions.value = sessions.value.map(item => (item.id === sessionId ? { ...item, title } : item));
   }
 
   async function deleteSession(sessionId: number) {
@@ -93,6 +132,7 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
       method: 'delete'
     });
     if (error) return false;
+    if (draftSession.value?.id === sessionId) draftSession.value = null;
     sessions.value = sessions.value.filter(item => item.id !== sessionId);
     if (activeSessionId.value === sessionId) {
       activeSessionId.value = sessions.value[0]?.id || null;
@@ -147,9 +187,11 @@ export const useChatStore = defineStore(SetupStoreId.Chat, () => {
     scrollToBottom,
     loadSessions,
     createSession,
+    applyScope,
     selectSession,
     loadMessages,
     renameSession,
+    applySessionTitle,
     deleteSession,
     ensureActiveSession,
     refreshActiveSessionMessages
