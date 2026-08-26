@@ -10,6 +10,7 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Set;
 
 public interface DocumentVectorRepository extends JpaRepository<DocumentVector, Long> {
     List<DocumentVector> findByFileMd5(String fileMd5); // 查询某文件的所有分块
@@ -54,6 +55,9 @@ public interface DocumentVectorRepository extends JpaRepository<DocumentVector, 
             String fileMd5, Integer firstChunkId, Integer lastChunkId);
 
     long countByFileMd5(String fileMd5);
+
+    @Query("select distinct vector.fileMd5 from DocumentVector vector")
+    Set<String> findIndexedFileMd5s();
 
     @Query(value = "SELECT COUNT(DISTINCT chunk_id) FROM document_vectors WHERE file_md5 = :fileMd5", nativeQuery = true)
     long countDistinctChunksByFileMd5(@Param("fileMd5") String fileMd5);

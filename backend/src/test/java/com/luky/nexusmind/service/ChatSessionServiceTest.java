@@ -33,26 +33,29 @@ class ChatSessionServiceTest {
     @BeforeEach
     void setUp() {
         users = new InMemoryUserRepository();
-        sessions = new InMemoryChatSessionRepository();
         messages = new InMemoryChatMessageRepository();
+        sessions = new InMemoryChatSessionRepository(messages);
         historyCache = new InMemoryChatHistoryCache();
         service = new ChatSessionService(users.proxy(), sessions.proxy(), messages.proxy(), historyCache);
     }
 
     @Test
-    void createSessionReturnsDefaultTitleAndListsOnlyOwnerSessions() {
+    void listSessionsIncludesOnlyOwnedSessionsWithMessages() {
         User alice = user("alice", 1L);
         User bob = user("bob", 2L);
         users.save(alice);
         users.save(bob);
 
         ChatSession aliceSession = service.createSession("alice");
-        service.createSession("bob");
+        ChatSession emptyAliceSession = service.createSession("alice");
+        ChatSession bobSession = service.createSession("bob");
+        service.appendCompletedExchange("alice", aliceSession.getId(), "问题", "回答", null);
+        service.appendCompletedExchange("bob", bobSession.getId(), "问题", "回答", null);
 
         List<ChatSession> result = service.listSessions("alice");
 
-        assertEquals("新会话", aliceSession.getTitle());
-        assertFalse(aliceSession.isTitleGenerated());
+        assertEquals("新会话", emptyAliceSession.getTitle());
+        assertFalse(emptyAliceSession.isTitleGenerated());
         assertEquals(List.of(aliceSession.getId()), result.stream().map(ChatSession::getId).toList());
     }
 
@@ -81,7 +84,23 @@ class ChatSessionServiceTest {
     }
 
     @Test
-    void appendCompletedExchangeStoresMessagesAndFallbackTitleForFirstExchange() {
+    void scopeCannotChangeAfterTheFirstExchange() {
+        users.save(user("alice", 1L));
+        ChatSession session = service.createSession("alice");
+        ChatScopeService.ScopeSelection privateScope = new ChatScopeService.ScopeSelection(
+                com.luky.nexusmind.model.ChatScopeType.PRIVATE, null, "我的私人空间", null);
+
+        service.updateScope("alice", session.getId(), privateScope);
+        assertEquals("我的私人空间", session.getScopeLabel());
+        service.appendCompletedExchange("alice", session.getId(), "问题", "回答", null);
+
+        assertThrows(CustomException.class, () -> service.updateScope("alice", session.getId(),
+                new ChatScopeService.ScopeSelection(
+                        com.luky.nexusmind.model.ChatScopeType.ALL, null, "全部知识", null)));
+    }
+
+    @Test
+    void appendCompletedExchangeKeepsNewSessionTitleWhileGeneratedTitleIsPending() {
         users.save(user("alice", 1L));
         ChatSession session = service.createSession("alice");
 
@@ -96,21 +115,77 @@ class ChatSessionServiceTest {
         List<ChatMessage> stored = service.getMessages("alice", session.getId());
         assertEquals(List.of("user", "assistant"), stored.stream().map(ChatMessage::getRole).toList());
         assertEquals("finished", stored.get(1).getStatus());
-        assertEquals("请帮我总结这份产品需求文档中的核心风险", session.getTitle());
-        assertTrue(session.isTitleGenerated());
+        assertEquals("新会话", session.getTitle());
+        assertFalse(session.isTitleGenerated());
         assertTrue(firstExchange);
     }
 
     @Test
-    void appendCompletedExchangeReturnsFalseAfterFirstExchangeAndKeepsExistingTitle() {
+    void fallbackTitleRemainsEligibleForLaterGeneratedTitle() {
         users.save(user("alice", 1L));
         ChatSession session = service.createSession("alice");
         assertTrue(service.appendCompletedExchange("alice", session.getId(), "首次问题", "首次回答", null));
 
-        boolean firstExchange = service.appendCompletedExchange("alice", session.getId(), "后续问题", "后续回答", "新标题");
+        boolean firstExchange = service.appendCompletedExchange(
+                "alice", session.getId(), "后续问题", "后续回答", null);
 
         assertFalse(firstExchange);
-        assertEquals("首次问题", session.getTitle());
+        assertFalse(session.isTitleGenerated());
+        assertEquals("新会话", session.getTitle());
+
+        service.updateGeneratedTitle("alice", session.getId(), "技术风险总结");
+
+        assertFalse(service.appendCompletedExchange(
+                "alice", session.getId(), "第三个问题", "第三个回答", null));
+    }
+
+    @Test
+    void fallbackTitleIsImmediateStableAndStillReplaceableByAi() {
+        users.save(user("alice", 1L));
+        ChatSession session = service.createSession("alice");
+
+        assertEquals("请帮我总结这份产品需求文档中的核心风险和改进建议", service.ensureFallbackTitle(
+                "alice", session.getId(), "  请帮我总结这份产品需求文档中的核心风险和改进建议  "));
+        assertNull(service.ensureFallbackTitle("alice", session.getId(), "第二条消息"));
+        assertFalse(session.isTitleGenerated());
+
+        assertEquals("产品需求风险与改进建议", service.updateGeneratedTitle(
+                "alice", session.getId(), "“产品需求风险与改进建议”"));
+        assertEquals("产品需求风险与改进建议", session.getTitle());
+        assertTrue(session.isTitleGenerated());
+    }
+
+    @Test
+    void generatedTitleCannotOverwriteManualRename() {
+        users.save(user("alice", 1L));
+        ChatSession session = service.createSession("alice");
+        service.ensureFallbackTitle("alice", session.getId(), "原始问题");
+        service.renameSession("alice", session.getId(), "用户指定标题");
+
+        assertNull(service.updateGeneratedTitle("alice", session.getId(), "模型晚到标题"));
+        assertEquals("用户指定标题", session.getTitle());
+    }
+
+    @Test
+    void generatedTitleRejectsAnswerShapedOrMultilineOutput() {
+        users.save(user("alice", 1L));
+        ChatSession session = service.createSession("alice");
+
+        assertNull(service.updateGeneratedTitle("alice", session.getId(), "第一行\n第二行"));
+        assertNull(service.updateGeneratedTitle("alice", session.getId(), "这是问题的答案。"));
+        assertEquals("新会话", session.getTitle());
+    }
+
+    @Test
+    void completedExchangeDoesNotOverwriteTitleGeneratedInParallel() {
+        users.save(user("alice", 1L));
+        ChatSession session = service.createSession("alice");
+        service.updateGeneratedTitle("alice", session.getId(), "产品风险分析");
+
+        service.appendCompletedExchange("alice", session.getId(), "原始问题", "完整回答", null);
+
+        assertEquals("产品风险分析", session.getTitle());
+        assertTrue(session.isTitleGenerated());
     }
 
     @Test
@@ -149,6 +224,19 @@ class ChatSessionServiceTest {
         assertEquals("技术风险总结", session.getTitle());
         service.updateGeneratedTitle("alice", session.getId(), " ");
         assertEquals("技术风险总结", session.getTitle());
+    }
+
+    @Test
+    void generatedTitlesDoNotChangeConversationActivityTime() {
+        users.save(user("alice", 1L));
+        ChatSession session = service.createSession("alice");
+        LocalDateTime activityTime = LocalDateTime.of(2026, 8, 25, 17, 11);
+        session.setUpdatedAt(activityTime);
+
+        service.ensureFallbackTitle("alice", session.getId(), "总结知识库");
+        service.updateGeneratedTitle("alice", session.getId(), "知识库内容总结");
+
+        assertEquals(activityTime, session.getUpdatedAt());
     }
 
     @Test
@@ -250,13 +338,22 @@ class ChatSessionServiceTest {
 
     private static class InMemoryChatSessionRepository {
         private final Map<Long, ChatSession> byId = new HashMap<>();
+        private final InMemoryChatMessageRepository messages;
         private long nextId = 1L;
+
+        InMemoryChatSessionRepository(InMemoryChatMessageRepository messages) {
+            this.messages = messages;
+        }
 
         ChatSessionRepository proxy() {
             return ChatSessionServiceTest.proxy(ChatSessionRepository.class, (proxy, method, args) -> switch (method.getName()) {
                 case "save" -> save((ChatSession) args[0]);
-                case "findByUserUsernameAndDeletedAtIsNullOrderByUpdatedAtDesc" -> list((String) args[0]);
+                case "findHistoryByUsername" -> list((String) args[0]);
                 case "findByIdAndUserUsernameAndDeletedAtIsNull" -> findActive((Long) args[0], (String) args[1]);
+                case "setFallbackTitleIfDefault" -> setFallbackTitleIfDefault(
+                        (Long) args[0], (String) args[1]);
+                case "setGeneratedTitleIfPending" -> setGeneratedTitleIfPending(
+                        (Long) args[0], (String) args[1]);
                 default -> defaultValue(method.getReturnType());
             });
         }
@@ -278,6 +375,7 @@ class ChatSessionServiceTest {
             return byId.values().stream()
                     .filter(session -> username.equals(session.getUser().getUsername()))
                     .filter(session -> session.getDeletedAt() == null)
+                    .filter(session -> messages.exists(session.getId()))
                     .sorted(Comparator.comparing(ChatSession::getUpdatedAt).reversed())
                     .toList();
         }
@@ -292,6 +390,28 @@ class ChatSessionServiceTest {
 
         Optional<ChatSession> findRaw(Long id) {
             return Optional.ofNullable(byId.get(id));
+        }
+
+        int setFallbackTitleIfDefault(Long id, String title) {
+            Optional<ChatSession> session = findRaw(id)
+                    .filter(item -> item.getDeletedAt() == null)
+                    .filter(item -> !item.isTitleGenerated())
+                    .filter(item -> "新会话".equals(item.getTitle()));
+            session.ifPresent(item -> saveTitle(item, title, false));
+            return session.isPresent() ? 1 : 0;
+        }
+
+        int setGeneratedTitleIfPending(Long id, String title) {
+            Optional<ChatSession> session = findRaw(id)
+                    .filter(item -> item.getDeletedAt() == null)
+                    .filter(item -> !item.isTitleGenerated());
+            session.ifPresent(item -> saveTitle(item, title, true));
+            return session.isPresent() ? 1 : 0;
+        }
+
+        void saveTitle(ChatSession session, String title, boolean generated) {
+            session.setTitle(title);
+            session.setTitleGenerated(generated);
         }
     }
 
@@ -335,6 +455,10 @@ class ChatSessionServiceTest {
                     .sorted(Comparator.comparing(ChatMessage::getCreatedAt).reversed())
                     .limit(20)
                     .toList();
+        }
+
+        boolean exists(Long sessionId) {
+            return rows.stream().anyMatch(message -> message.getSession().getId().equals(sessionId));
         }
     }
 

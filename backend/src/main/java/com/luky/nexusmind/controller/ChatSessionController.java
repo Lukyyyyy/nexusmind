@@ -2,7 +2,9 @@ package com.luky.nexusmind.controller;
 
 import com.luky.nexusmind.model.ChatMessage;
 import com.luky.nexusmind.model.ChatSession;
+import com.luky.nexusmind.model.ChatScopeType;
 import com.luky.nexusmind.exception.CustomException;
+import com.luky.nexusmind.service.ChatScopeService;
 import com.luky.nexusmind.service.ChatSessionService;
 import com.luky.nexusmind.utils.JwtUtils;
 import org.springframework.http.HttpStatus;
@@ -19,17 +21,29 @@ public class ChatSessionController {
 
     private final ChatSessionService chatSessionService;
     private final JwtUtils jwtUtils;
+    private final ChatScopeService chatScopeService;
 
-    public ChatSessionController(ChatSessionService chatSessionService, JwtUtils jwtUtils) {
+    public ChatSessionController(ChatSessionService chatSessionService, JwtUtils jwtUtils,
+                                 ChatScopeService chatScopeService) {
         this.chatSessionService = chatSessionService;
         this.jwtUtils = jwtUtils;
+        this.chatScopeService = chatScopeService;
     }
 
     @PostMapping
-    public ResponseEntity<?> createSession(@RequestHeader("Authorization") String token) {
+    public ResponseEntity<?> createSession(@RequestHeader("Authorization") String token,
+                                           @RequestBody(required = false) ScopeRequest request) {
         String username = username(token);
-        ChatSession session = chatSessionService.createSession(username);
+        ChatScopeService.ScopeSelection scope = request == null
+                ? chatScopeService.select(username, ChatScopeType.ALL, null, List.of())
+                : chatScopeService.select(username, request.type(), request.orgTag(), request.documentIds());
+        ChatSession session = chatSessionService.createSession(username, scope);
         return ok("创建会话成功", sessionData(session));
+    }
+
+    @GetMapping("/scope-options")
+    public ResponseEntity<?> scopeOptions(@RequestHeader("Authorization") String token) {
+        return ok("获取问答范围成功", chatScopeService.options(username(token)));
     }
 
     @GetMapping
@@ -60,6 +74,16 @@ public class ChatSessionController {
         String username = username(token);
         ChatSession session = chatSessionService.renameSession(username, sessionId, request.title());
         return ok("重命名会话成功", sessionData(session));
+    }
+
+    @PatchMapping("/{sessionId}/scope")
+    public ResponseEntity<?> updateScope(@RequestHeader("Authorization") String token,
+                                         @PathVariable Long sessionId,
+                                         @RequestBody ScopeRequest request) {
+        String username = username(token);
+        ChatScopeService.ScopeSelection scope = chatScopeService.select(
+                username, request.type(), request.orgTag(), request.documentIds());
+        return ok("更新问答范围成功", sessionData(chatSessionService.updateScope(username, sessionId, scope)));
     }
 
     @DeleteMapping("/{sessionId}")
@@ -107,6 +131,7 @@ public class ChatSessionController {
         data.put("titleGenerated", session.isTitleGenerated());
         data.put("createdAt", session.getCreatedAt());
         data.put("updatedAt", session.getUpdatedAt());
+        data.put("scope", ChatScopeService.view(session));
         return data;
     }
 
@@ -123,5 +148,8 @@ public class ChatSessionController {
     }
 
     public record SessionUpdateRequest(String title) {
+    }
+
+    public record ScopeRequest(ChatScopeType type, String orgTag, List<Long> documentIds) {
     }
 }

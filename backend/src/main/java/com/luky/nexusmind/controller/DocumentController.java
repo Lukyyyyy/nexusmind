@@ -250,6 +250,7 @@ public class DocumentController {
 
         return files.stream().map(file -> {
             Map<String, Object> dto = new HashMap<>();
+            dto.put("id", file.getId());
             dto.put("fileMd5", file.getFileMd5());
             dto.put("fileName", file.getFileName());
             dto.put("totalSize", file.getTotalSize());

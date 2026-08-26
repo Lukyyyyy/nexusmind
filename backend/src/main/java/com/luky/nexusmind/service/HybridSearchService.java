@@ -17,6 +17,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import co.elastic.clients.elasticsearch._types.query_dsl.Operator;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
+import co.elastic.clients.elasticsearch._types.FieldValue;
 
 import java.util.Collections;
 import java.util.List;
@@ -62,7 +63,14 @@ public class HybridSearchService {
      * @return 搜索结果列表
      */
     public List<SearchResult> searchWithPermission(String query, String userId, int topK) {
+        return searchWithPermission(query, userId, topK, null);
+    }
+
+    public List<SearchResult> searchWithPermission(String query, String userId, int topK,
+                                                   Set<String> scopeFileMd5s) {
         logger.debug("开始带权限搜索，查询: {}, 用户ID: {}", query, userId);
+
+        if (scopeFileMd5s != null && scopeFileMd5s.isEmpty()) return List.of();
 
         try {
             // 获取用户有效的组织标签（包含层级关系）
@@ -80,10 +88,15 @@ public class HybridSearchService {
             // 如果向量生成失败，仅使用文本匹配
             if (queryVector == null) {
                 logger.warn("向量生成失败，仅使用文本匹配进行搜索");
-                return textOnlySearchWithPermission(query, userDbId, userEffectiveTags, administrator, topK);
+                return textOnlySearchWithPermission(
+                        query, userDbId, userEffectiveTags, administrator, topK, scopeFileMd5s);
             }
 
             logger.debug("向量生成成功，开始执行混合搜索 KNN");
+
+            List<Query> retrievalFilters = new ArrayList<>();
+            retrievalFilters.add(buildPermissionQuery(userDbId, userEffectiveTags, administrator));
+            if (scopeFileMd5s != null) retrievalFilters.add(buildFileScopeQuery(scopeFileMd5s));
 
             SearchResponse<EsDocument> response = esClient.search(s -> {
                 s.index("knowledge_base");
@@ -93,11 +106,15 @@ public class HybridSearchService {
                         .field("vector")
                         .queryVector(queryVector)
                         .k(recallK)
-                        .numCandidates(recallK));
+                        .numCandidates(recallK)
+                        .filter(retrievalFilters));
                 // 必须命中关键词 + 权限过滤
-                s.query(q -> q.bool(b -> b
-                        .must(mst -> mst.match(m -> m.field("textContent").query(query)))
-                        .filter(buildPermissionQuery(userDbId, userEffectiveTags, administrator))));
+                s.query(q -> q.bool(b -> {
+                    b.must(mst -> mst.match(m -> m.field("textContent").query(query)))
+                            .filter(buildPermissionQuery(userDbId, userEffectiveTags, administrator));
+                    if (scopeFileMd5s != null) b.filter(buildFileScopeQuery(scopeFileMd5s));
+                    return b;
+                }));
 
                 // 第二阶段 BM25 rescore
                 s.rescore(r -> r
@@ -143,7 +160,7 @@ public class HybridSearchService {
             try {
                 logger.info("尝试使用纯文本搜索作为后备方案");
                 return textOnlySearchWithPermission(query, getUserDbId(userId), getUserEffectiveOrgTags(userId),
-                        isAdministrator(userId), topK);
+                        isAdministrator(userId), topK, scopeFileMd5s);
             } catch (Exception fallbackError) {
                 logger.error("后备搜索也失败", fallbackError);
                 return Collections.emptyList();
@@ -156,20 +173,22 @@ public class HybridSearchService {
      */
     private List<SearchResult> textOnlySearchWithPermission(String query, String userDbId,
             List<String> userEffectiveTags, boolean administrator, int topK) {
+        return textOnlySearchWithPermission(query, userDbId, userEffectiveTags, administrator, topK, null);
+    }
+
+    private List<SearchResult> textOnlySearchWithPermission(String query, String userDbId,
+            List<String> userEffectiveTags, boolean administrator, int topK, Set<String> scopeFileMd5s) {
         try {
             logger.debug("开始执行纯文本搜索，用户数据库ID: {}, 标签: {}", userDbId, userEffectiveTags);
 
             SearchResponse<EsDocument> response = esClient.search(s -> s
                     .index("knowledge_base")
-                    .query(q -> q
-                            .bool(b -> b
-                                    // 匹配内容相关性
-                                    .must(m -> m
-                                            .match(ma -> ma
-                                                    .field("textContent")
-                                                    .query(query)))
-                                    // 权限过滤
-                                    .filter(buildPermissionQuery(userDbId, userEffectiveTags, administrator))))
+                    .query(q -> q.bool(b -> {
+                        b.must(m -> m.match(ma -> ma.field("textContent").query(query)))
+                                .filter(buildPermissionQuery(userDbId, userEffectiveTags, administrator));
+                        if (scopeFileMd5s != null) b.filter(buildFileScopeQuery(scopeFileMd5s));
+                        return b;
+                    }))
                     .minScore(0.3d)
                     .size(topK),
                     EsDocument.class);
@@ -227,7 +246,8 @@ public class HybridSearchService {
                         .field("vector")
                         .queryVector(queryVector)
                         .k(recallK)
-                        .numCandidates(recallK));
+                        .numCandidates(recallK)
+                        .filter(buildPublicPermissionQuery()));
 
                 s.query(q -> q.bool(b -> b
                         .must(m -> m.match(match -> match.field("textContent").query(query)))
@@ -416,6 +436,11 @@ public class HybridSearchService {
                 .mustNot(privateTag -> privateTag.prefix(p -> p
                         .field("orgTag")
                         .value(DocumentPermissionPolicy.PRIVATE_TAG_PREFIX)))));
+    }
+
+    private Query buildFileScopeQuery(Set<String> fileMd5s) {
+        List<FieldValue> values = fileMd5s.stream().map(FieldValue::of).toList();
+        return Query.of(q -> q.terms(t -> t.field("fileMd5").terms(terms -> terms.value(values))));
     }
 
     private boolean isAdministrator(String userId) {

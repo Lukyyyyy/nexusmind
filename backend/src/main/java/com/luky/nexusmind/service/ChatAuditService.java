@@ -63,6 +63,8 @@ public class ChatAuditService {
         result.put("agentTrace", message.getAgentTrace());
         result.put("thinkingDurationMs", message.getThinkingDurationMs());
         result.put("timestamp", message.getCreatedAt());
+        result.put("sessionId", message.getSession().getId());
+        result.put("scope", ChatScopeService.view(message.getSession()));
         if (includeUsername) {
             result.put("username", message.getSession().getUser().getUsername());
         }

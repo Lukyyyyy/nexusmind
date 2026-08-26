@@ -24,6 +24,7 @@ import java.util.Map;
 public class ChatSessionService {
 
     private static final int MAX_TITLE_LENGTH = 60;
+    private static final int MAX_FALLBACK_TITLE_LENGTH = 120;
 
     private final UserRepository userRepository;
     private final ChatSessionRepository chatSessionRepository;
@@ -49,17 +50,34 @@ public class ChatSessionService {
 
     @Transactional
     public ChatSession createSession(String username) {
+        return createSession(username, new ChatScopeService.ScopeSelection(
+                com.luky.nexusmind.model.ChatScopeType.ALL, null, "全部知识", null));
+    }
+
+    @Transactional
+    public ChatSession createSession(String username, ChatScopeService.ScopeSelection scope) {
         User user = getUser(username);
         ChatSession session = new ChatSession();
         session.setUser(user);
         session.setTitle("新会话");
         session.setTitleGenerated(false);
+        applyScope(session, scope);
+        return chatSessionRepository.save(session);
+    }
+
+    @Transactional
+    public ChatSession updateScope(String username, Long sessionId, ChatScopeService.ScopeSelection scope) {
+        ChatSession session = getOwnedActiveSession(username, sessionId);
+        if (chatMessageRepository.existsBySessionId(sessionId)) {
+            throw new CustomException("已有消息的会话不能修改问答范围，请创建新会话", HttpStatus.CONFLICT);
+        }
+        applyScope(session, scope);
         return chatSessionRepository.save(session);
     }
 
     @Transactional(readOnly = true)
     public List<ChatSession> listSessions(String username) {
-        return chatSessionRepository.findByUserUsernameAndDeletedAtIsNullOrderByUpdatedAtDesc(username);
+        return chatSessionRepository.findHistoryByUsername(username);
     }
 
     @Transactional(readOnly = true)
@@ -153,10 +171,14 @@ public class ChatSessionService {
         assistantMessage.setAgentTrace(agentTrace);
         assistantMessage.setThinkingDurationMs(thinkingDurationMs);
         chatMessageRepository.save(assistantMessage);
-        if (wasEmpty) {
-            session.setTitle(normalizeGeneratedTitle(generatedTitle, userMessage));
-            session.setTitleGenerated(true);
+        if (wasEmpty && !session.isTitleGenerated()) {
+            String normalizedTitle = normalizeGeneratedTitleOnly(generatedTitle);
+            if (normalizedTitle != null) {
+                session.setTitle(normalizedTitle);
+                session.setTitleGenerated(true);
+            }
         }
+        session.setUpdatedAt(LocalDateTime.now());
         chatSessionRepository.save(session);
         boolean seedCacheIfMissing = wasEmpty;
         afterCommit(() -> chatHistoryCache.appendExchange(
@@ -165,21 +187,39 @@ public class ChatSessionService {
     }
 
     @Transactional
-    public boolean updateGeneratedTitle(String username, Long sessionId, String generatedTitle) {
+    public String ensureFallbackTitle(String username, Long sessionId, String userMessage) {
+        String fallback = deriveFallbackTitle(userMessage);
+        if (fallback == null) {
+            return null;
+        }
+        getOwnedActiveSession(username, sessionId);
+        return chatSessionRepository.setFallbackTitleIfDefault(sessionId, fallback) == 1
+                ? fallback
+                : null;
+    }
+
+    @Transactional
+    public String updateGeneratedTitle(String username, Long sessionId, String generatedTitle) {
         String normalized = normalizeGeneratedTitleOnly(generatedTitle);
         if (normalized == null) {
-            return false;
+            return null;
         }
-        ChatSession session = getOwnedActiveSession(username, sessionId);
-        session.setTitle(normalized);
-        session.setTitleGenerated(true);
-        chatSessionRepository.save(session);
-        return true;
+        getOwnedActiveSession(username, sessionId);
+        return chatSessionRepository.setGeneratedTitleIfPending(sessionId, normalized) == 1
+                ? normalized
+                : null;
     }
 
     private User getUser(String username) {
         return userRepository.findByUsername(username)
                 .orElseThrow(() -> new CustomException("用户不存在", HttpStatus.NOT_FOUND));
+    }
+
+    private void applyScope(ChatSession session, ChatScopeService.ScopeSelection scope) {
+        session.setScopeType(scope.type());
+        session.setScopeValue(scope.value());
+        session.setScopeLabel(scope.label());
+        session.setScopeDetails(scope.details());
     }
 
     private ChatMessage newMessage(ChatSession session, String role, String content, String status) {
@@ -199,33 +239,35 @@ public class ChatSessionService {
         return abbreviate(normalized, MAX_TITLE_LENGTH);
     }
 
-    private String normalizeGeneratedTitle(String generatedTitle, String fallback) {
-        String candidate = generatedTitle == null ? "" : generatedTitle
+    private String normalizeGeneratedTitleOnly(String generatedTitle) {
+        String raw = generatedTitle == null ? "" : generatedTitle.trim();
+        if (raw.indexOf('\n') >= 0 || raw.indexOf('\r') >= 0) {
+            return null;
+        }
+        String candidate = raw
                 .replace("\"", "")
                 .replace("'", "")
                 .replace("“", "")
                 .replace("”", "")
+                .replaceFirst("^(?:标题|会话标题|Title)\\s*[:：]\\s*", "")
                 .trim();
-        if (candidate.isEmpty()) {
-            candidate = fallback == null ? "新会话" : fallback.trim();
+        int length = candidate.codePointCount(0, candidate.length());
+        if (length < 2 || length > MAX_TITLE_LENGTH || candidate.matches(".*[。！？!?；;].*")) {
+            return null;
         }
-        if (candidate.isEmpty()) {
-            candidate = "新会话";
-        }
-        return abbreviate(candidate, MAX_TITLE_LENGTH);
+        return candidate;
     }
 
-    private String normalizeGeneratedTitleOnly(String generatedTitle) {
-        String candidate = generatedTitle == null ? "" : generatedTitle
-                .replace("\"", "")
-                .replace("'", "")
-                .replace("“", "")
-                .replace("”", "")
-                .trim();
+    private String deriveFallbackTitle(String userMessage) {
+        String candidate = userMessage == null ? "" : userMessage.replaceAll("\\s+", " ").trim();
         if (candidate.isEmpty()) {
             return null;
         }
-        return abbreviate(candidate, MAX_TITLE_LENGTH);
+        int length = candidate.codePointCount(0, candidate.length());
+        if (length <= MAX_FALLBACK_TITLE_LENGTH) {
+            return candidate;
+        }
+        return candidate.substring(0, candidate.offsetByCodePoints(0, MAX_FALLBACK_TITLE_LENGTH));
     }
 
     private String abbreviate(String value, int maxLength) {
