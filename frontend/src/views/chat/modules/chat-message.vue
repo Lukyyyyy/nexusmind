@@ -34,8 +34,6 @@ function handleCopy(content: string) {
   window.$message?.success('已复制');
 }
 
-const chatStore = useChatStore();
-
 const traceExpanded = ref(false);
 const traceSteps = computed<Api.Chat.AgentStep[]>(() => {
   if (Array.isArray(props.msg.agentTrace)) return props.msg.agentTrace;
@@ -93,7 +91,7 @@ const traceSummary = computed(() => {
   if (thinkingRunning.value && !traceSteps.value.length) return '正在思考';
   if (traceRunning.value) return traceSteps.value.at(-1)?.title || '正在处理';
   const toolCount = traceSteps.value.filter(step => step.category === 'tool').length;
-  return toolCount > 0 ? `已完成 · 调用了 ${toolCount} 个工具` : '已完成思考与整理';
+  return toolCount > 0 ? `已完成 · 调用了 ${toolCount} 次工具` : '已完成思考与整理';
 });
 
 watch(
@@ -123,8 +121,9 @@ const sourceDialogVisible = ref(false);
 const sourceLoading = ref(false);
 const selectedSource = ref<Api.KnowledgeBase.DocumentChunk | null>(null);
 
-const sourceTokenPattern = /kb:([a-f\d]{32,64}):(\d+(?:\s*[、,，]\s*\d+)*)/gi;
-const wrappedSourcePattern = /[（(]\s*来源\s*[：:]\s*(kb:[a-f\d]{32,64}:\d+(?:\s*[、,，]\s*\d+)*)\s*[）)]/gi;
+const sourceTokenPattern = /kb:([a-f\d]{32,64})(?::(\d+(?:\s*[、,，]\s*\d+)*))?/gi;
+const wrappedSourcePattern = /[（(]\s*(?:来源|编号)\s*[：:]\s*(kb:[a-f\d]{32,64}(?::\d+(?:\s*[、,，]\s*\d+)*)?)\s*[）)]/gi;
+const bracketedSourcePattern = /\[\s*(kb:[a-f\d]{32,64}(?::\d+(?:\s*[、,，]\s*\d+)*)?)\s*\]/gi;
 
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, character => {
@@ -133,8 +132,9 @@ function escapeHtml(value: string) {
   });
 }
 
-function renderSourceReferences(fileMd5: string, chunkIds: string) {
+function renderSourceReferences(fileMd5: string, chunkIds?: string) {
   const fileName = escapeHtml(sourceNames[fileMd5] || '文档');
+  if (!chunkIds) return '';
   return chunkIds
     .split(/\s*[、,，]\s*/)
     .map(chunkId =>
@@ -144,15 +144,18 @@ function renderSourceReferences(fileMd5: string, chunkIds: string) {
 }
 
 function processSourceReferences(text: string) {
-  const replaceToken = (_match: string, fileMd5: string, chunkIds: string) =>
-    renderSourceReferences(fileMd5.toLowerCase(), chunkIds);
+  const replaceToken = (_match: string, fileMd5: string, chunkIds?: string) =>
+    chunkIds ? `[ ${renderSourceReferences(fileMd5.toLowerCase(), chunkIds)} ]` : '';
   return text
-    .replace(wrappedSourcePattern, (_match, token: string) => token.replace(sourceTokenPattern, replaceToken))
+    .replace(/(`+)(kb:[a-f\d]{32,64}(?::\d+(?:\s*[、,，]\s*\d+)*)?)\1/gi, '$2')
+    .replace(/\[\s*sourceId\s*[:：]\s*(\[\s*kb:[a-f\d]{32,64}(?::\d+(?:\s*[、,，]\s*\d+)*)?\s*\])\s*\]/gi, '$1')
+    .replace(wrappedSourcePattern, '$1')
+    .replace(bracketedSourcePattern, '$1')
     .replace(sourceTokenPattern, replaceToken);
 }
 
 function collectSourceFileMd5s(text: string) {
-  return [...text.matchAll(sourceTokenPattern)].map(match => match[1].toLowerCase());
+  return [...text.matchAll(sourceTokenPattern)].filter(match => match[2]).map(match => match[1].toLowerCase());
 }
 
 async function resolveSourceName(fileMd5: string) {
@@ -175,7 +178,6 @@ watch(
 );
 
 const content = computed(() => {
-  chatStore.scrollToBottom?.();
   const rawContent = props.msg.content ?? '';
 
   // 只对助手消息处理来源链接
@@ -219,6 +221,15 @@ async function handleContentClick(event: MouseEvent) {
 
 <template>
   <div class="chat-message" :class="msg.role === 'user' ? 'chat-message--user' : 'chat-message--assistant'">
+    <div v-if="msg.showScope && msg.scope" class="chat-message__scope">
+      <span><icon-solar:layers-minimalistic-linear />{{ msg.scope.label }}</span>
+      <NTooltip v-if="msg.scope.details?.length" trigger="hover">
+        <template #trigger><button type="button">查看范围</button></template>
+        <div class="max-w-320px">
+          <div v-for="detail in msg.scope.details" :key="detail" class="truncate">{{ detail }}</div>
+        </div>
+      </NTooltip>
+    </div>
     <div class="chat-message__inner">
       <template v-if="msg.role === 'user'">
         <div class="chat-message__user-row">
@@ -281,6 +292,18 @@ async function handleContentClick(event: MouseEvent) {
                         <b>{{ item.label }}</b>{{ item.value }}
                       </span>
                     </div>
+                  </div>
+                </div>
+                <div v-if="traceActive && !traceRunning" class="agent-step">
+                  <div class="agent-step__rail">
+                    <span class="agent-step__dot is-running">
+                      <icon-eos-icons:loading />
+                    </span>
+                    <span class="agent-step__line"></span>
+                  </div>
+                  <div class="agent-step__content">
+                    <div class="agent-step__heading"><span>正在分析检索结果</span></div>
+                    <p>判断是否需要继续检索，并规划下一步</p>
                   </div>
                 </div>
               </div>
@@ -652,6 +675,29 @@ async function handleContentClick(event: MouseEvent) {
   color: inherit;
   line-height: 1.5;
 }
+
+.chat-message__scope {
+  display: flex;
+  max-width: 860px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 auto 16px;
+  border-bottom: 1px solid #edf0f4;
+  padding: 0 2px 9px;
+  color: #7b8794;
+  font-size: 12px;
+}
+
+.chat-message__scope span,
+.chat-message__scope button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chat-message__scope button { background: transparent; color: #245bdb; }
+
+:global(.dark) .chat-message__scope { border-color: #2d3138; color: #929baa; }
 
 .chat-message__markdown {
   :deep(.vp-doc) {

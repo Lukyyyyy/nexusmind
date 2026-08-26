@@ -2,6 +2,7 @@
 import type { NScrollbar } from 'naive-ui';
 import { VueMarkdownItProvider } from 'vue-markdown-shiki';
 import ChatMessage from './chat-message.vue';
+import ScopeSelector from './scope-selector.vue';
 
 const chatStore = useChatStore();
 const { input, messages, activeSession, loading, wsStatus, wsData } = storeToRefs(chatStore);
@@ -9,6 +10,7 @@ const scrollbarRef = ref<InstanceType<typeof NScrollbar>>();
 const inputDockRef = ref<HTMLElement>();
 const inputDockHeight = ref(112);
 let inputDockResizeObserver: ResizeObserver | null = null;
+let scrollFrame: number | null = null;
 
 function finishThinking(message?: Api.Chat.Message) {
   if (!message?.thinkingStartedAt || message.thinkingDurationMs != null) return;
@@ -30,9 +32,20 @@ const sendable = computed(
 );
 
 const inputRef = ref<HTMLTextAreaElement>();
-const isInputExpanded = ref(false);
 const inputMinHeight = 24;
 const inputMaxHeight = 200;
+
+const suggestions = [
+  '知识库中有哪些文档？',
+  '帮我总结知识库中的核心内容。',
+  '我能访问哪些知识库文档？'
+];
+let websocketOpened = false;
+
+function useSuggestion(suggestion: string) {
+  input.value.message = suggestion;
+  nextTick(() => inputRef.value?.focus());
+}
 
 const scrollbarContentStyle = computed(() => ({
   padding: `28px 28px ${inputDockHeight.value + 30}px`
@@ -58,7 +71,6 @@ function resizeInput() {
     const nextHeight = Math.min(textarea.scrollHeight, inputMaxHeight);
     textarea.style.height = `${Math.max(inputMinHeight, nextHeight)}px`;
     textarea.style.overflowY = textarea.scrollHeight > inputMaxHeight ? 'auto' : 'hidden';
-    isInputExpanded.value = textarea.scrollHeight > inputMinHeight + 2 || input.value.message.includes('\n');
     updateInputDockHeight();
   });
 }
@@ -67,7 +79,9 @@ watch(wsData, val => {
   if (!val) return;
   const data = JSON.parse(val);
   if (data.type === 'title_updated') {
-    chatStore.loadSessions();
+    if (typeof data.sessionId === 'number' && typeof data.title === 'string') {
+      chatStore.applySessionTitle(data.sessionId, data.title);
+    }
     return;
   }
   if (data.type === 'stop') return;
@@ -86,6 +100,11 @@ watch(wsData, val => {
   }
 
   const assistant = messages.value[messages.value.length - 1];
+
+  if (data.type === 'content_replaced') {
+    if (assistant?.role === 'assistant') assistant.content = data.content;
+    return;
+  }
 
   if (data.type === 'completion' && data.status === 'finished') {
     if (assistant?.role === 'assistant' && assistant.status !== 'error') {
@@ -110,17 +129,25 @@ watch(wsData, val => {
     assistant.content += data.chunk;
   }
   scrollToBottom();
+}, { flush: 'sync' });
+
+watch(wsStatus, status => {
+  if (status !== 'OPEN') return;
+  if (websocketOpened) chatStore.loadSessions();
+  websocketOpened = true;
 });
 
 watch(() => [...messages.value], scrollToBottom);
 
 function scrollToBottom() {
-  setTimeout(() => {
+  if (scrollFrame != null) return;
+  scrollFrame = requestAnimationFrame(() => {
     scrollbarRef.value?.scrollBy({
       top: 999999999999,
       behavior: 'auto'
     });
-  }, 80);
+    scrollFrame = null;
+  });
 }
 
 const handleSend = async () => {
@@ -142,6 +169,9 @@ const handleSend = async () => {
 
   const content = input.value.message.trim();
   if (!content) return;
+  if (activeSession.value?.id === sessionId && activeSession.value.title === '新会话') {
+    chatStore.applySessionTitle(sessionId, Array.from(content.replace(/\s+/g, ' ')).slice(0, 120).join(''));
+  }
 
   const timestamp = new Date().toISOString();
 
@@ -215,6 +245,7 @@ watch(() => input.value.message, resizeInput);
 onUnmounted(() => {
   inputDockResizeObserver?.disconnect();
   inputDockResizeObserver = null;
+  if (scrollFrame != null) cancelAnimationFrame(scrollFrame);
 });
 </script>
 
@@ -241,7 +272,18 @@ onUnmounted(() => {
         <VueMarkdownItProvider>
           <ChatMessage v-for="(item, index) in messages" :key="item.id || index" :msg="item" />
         </VueMarkdownItProvider>
-        <NEmpty v-if="!messages.length" description="暂无消息" class="mt-30" />
+        <section v-if="!messages.length && !loading" class="chat-empty">
+          <div class="chat-empty__icon"><icon-solar:chat-round-line-duotone /></div>
+          <h1>你好，欢迎使用知枢 NexusMind</h1>
+          <p></p>
+<!--          <p>从知识库中检索信息，获得有依据的回答</p>-->
+          <div class="chat-empty__suggestions">
+            <button v-for="suggestion in suggestions" :key="suggestion" type="button" @click="useSuggestion(suggestion)">
+              <span>{{ suggestion }}</span>
+              <icon-material-symbols:arrow-forward-rounded />
+            </button>
+          </div>
+        </section>
       </NSpin>
     </NScrollbar>
 
@@ -249,7 +291,7 @@ onUnmounted(() => {
       ref="inputDockRef"
       class="chat-input-dock pointer-events-none absolute inset-x-0 bottom-0 z-10 flex flex-col items-center px-4 pb-3 pt-4"
     >
-      <div class="chat-input pointer-events-auto" :class="{ 'chat-input--expanded': isInputExpanded }">
+      <div class="chat-input pointer-events-auto">
         <textarea
           ref="inputRef"
           v-model="input.message"
@@ -260,19 +302,18 @@ onUnmounted(() => {
           @input="resizeInput"
         />
         <div class="chat-input__toolbar">
-          <div class="chat-input__tools"></div>
+          <div class="chat-input__tools"><ScopeSelector /></div>
           <NButton
             :disabled="sendable"
             strong
             circle
             type="primary"
             class="chat-input__send"
+            :aria-label="isSending ? '停止生成' : '发送消息'"
             @click="handleSend"
           >
-            <template #icon>
-              <icon-material-symbols:stop-rounded v-if="isSending" />
-              <icon-guidance:send v-else />
-            </template>
+            <icon-material-symbols:stop-rounded v-if="isSending" />
+            <icon-guidance:send v-else />
           </NButton>
         </div>
       </div>
@@ -286,7 +327,7 @@ onUnmounted(() => {
 <style scoped lang="scss">
 .chat-input-dock {
   isolation: isolate;
-  background: linear-gradient(to bottom, rgb(255 255 255 / 0%), #fff 30%, #fff 100%);
+  background: linear-gradient(to bottom, rgb(247 249 252 / 0%), #f7f9fc 28%, #f7f9fc 100%);
 
   &::before {
     content: '';
@@ -315,15 +356,16 @@ onUnmounted(() => {
 .chat-input {
   display: flex;
   width: 100%;
-  max-width: 860px;
-  min-height: 68px;
-  align-items: center;
+  max-width: 820px;
+  min-height: 108px;
+  flex-direction: column;
+  align-items: stretch;
   gap: 12px;
-  border: 1px solid #dfe6eb;
-  border-radius: 999px;
+  border: 1px solid #dbe2ea;
+  border-radius: 16px;
   background: #fff;
-  padding: 11px 12px 11px 18px;
-  box-shadow: 0 10px 30px rgb(15 23 42 / 8%);
+  padding: 16px 14px 12px 16px;
+  box-shadow: 0 8px 24px rgb(15 23 42 / 7%);
   transition: border-color 160ms ease, box-shadow 160ms ease;
 }
 
@@ -337,19 +379,11 @@ onUnmounted(() => {
   box-shadow: 0 0 0 1px #2b2b31;
 }
 
-.chat-input--expanded {
-  min-height: 136px;
-  align-items: stretch;
-  flex-direction: column;
-  gap: 14px;
-  border-radius: 24px;
-  padding: 18px 14px 12px 22px;
-}
-
 .chat-input__textarea {
+  width: 100%;
   min-height: 24px;
   max-height: 200px;
-  flex: 1;
+  flex: none;
   resize: none;
   overflow-y: hidden;
   border: 0;
@@ -374,20 +408,11 @@ onUnmounted(() => {
   color: #6b7280;
 }
 
-.chat-input--expanded .chat-input__textarea {
-  width: 100%;
-  flex: none;
-}
-
 .chat-input__toolbar {
   display: flex;
+  width: 100%;
   flex-shrink: 0;
   align-items: center;
-  justify-content: flex-end;
-}
-
-.chat-input--expanded .chat-input__toolbar {
-  width: 100%;
   justify-content: space-between;
 }
 
@@ -397,14 +422,15 @@ onUnmounted(() => {
 
 .chat-input__send {
   flex-shrink: 0;
-  --n-width: 38px !important;
-  --n-height: 38px !important;
+  --n-width: 40px !important;
+  --n-height: 40px !important;
   --n-border-radius: 999px !important;
+  min-width: 40px;
   border-radius: 50% !important;
 }
 
 .chat-workspace {
-  background: #fff;
+  background: #f7f9fc;
 }
 
 .chat-toolbar {
@@ -415,8 +441,8 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: 16px;
   border-bottom: 1px solid #e7ebef;
-  background: #fff;
-  padding: 10px 24px;
+  background: rgb(255 255 255 / 92%);
+  padding: 10px 28px;
 }
 
 .chat-connection {
@@ -430,10 +456,72 @@ onUnmounted(() => {
   color: #64748b;
 }
 
+.chat-empty {
+  display: flex;
+  width: min(100%, 620px);
+  min-height: calc(100vh - 350px);
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto;
+  color: #162033;
+  text-align: center;
+}
+
+.chat-empty__icon {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  place-items: center;
+  margin-bottom: 16px;
+  border: 1px solid #cddafa;
+  border-radius: 14px;
+  background: #eef3ff;
+  color: #356ae6;
+  font-size: 26px;
+}
+
+.chat-empty h1 { margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -0.02em; }
+.chat-empty > p { margin: 9px 0 24px; color: #7b8798; font-size: 14px; }
+.chat-empty__suggestions { display: grid; width: min(100%, 560px); gap: 9px; }
+.chat-empty__suggestions button {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid #dfe5ed;
+  border-radius: 11px;
+  background: #fff;
+  padding: 0 15px;
+  color: #475467;
+  font-size: 14px;
+  text-align: left;
+  transition: 160ms ease;
+}
+.chat-empty__suggestions button:hover {
+  border-color: #a9bff2;
+  color: #245bdb;
+  box-shadow: 0 4px 12px rgb(15 23 42 / 5%);
+}
+.chat-empty__suggestions button svg { flex: 0 0 auto; color: #8b96a7; font-size: 18px; }
+
 :global(.dark) .chat-workspace,
 :global(.dark) .chat-toolbar {
   border-color: #2b3440;
   background: #181e25;
+}
+
+:global(.dark) .chat-input-dock {
+  background: linear-gradient(to bottom, rgb(24 30 37 / 0%), #181e25 28%, #181e25 100%);
+}
+
+:global(.dark) .chat-empty { color: #edf0f5; }
+:global(.dark) .chat-empty__icon { border-color: #3c527f; background: #202b40; }
+:global(.dark) .chat-empty__suggestions button {
+  border-color: #303843;
+  background: #1d242c;
+  color: #c8d0db;
 }
 
 @media (max-width: 640px) {
@@ -454,11 +542,11 @@ onUnmounted(() => {
   }
 
   .chat-input {
-    border-radius: 999px;
+    min-height: 104px;
+    border-radius: 14px;
   }
 
-  .chat-input--expanded {
-    border-radius: 22px;
-  }
+  .chat-empty { min-height: calc(100vh - 330px); padding-inline: 8px; }
+  .chat-empty h1 { font-size: 20px; }
 }
 </style>

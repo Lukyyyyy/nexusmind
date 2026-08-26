@@ -14,6 +14,19 @@ const collapsed = ref(
   appStore.isMobile || (typeof window !== 'undefined' && window.localStorage.getItem(collapsedStorageKey) === 'true')
 );
 
+function formatSessionTime(timestamp: string) {
+  const date = dayjs(timestamp);
+  if (!date.isValid()) return '';
+  if (date.isSame(dayjs(), 'day')) return date.format('HH:mm');
+  if (date.isSame(dayjs().subtract(1, 'day'), 'day')) return '昨天';
+  return date.format('MM/DD');
+}
+
+function setTitleScrollDuration(event: MouseEvent) {
+  const title = (event.currentTarget as HTMLElement).querySelector<HTMLElement>('.chat-list__session-title')!;
+  title.style.setProperty('--title-scroll-duration', `${Math.max(0, title.scrollWidth - title.clientWidth) / 40}s`);
+}
+
 watch(
   () => appStore.isMobile,
   isMobile => {
@@ -84,30 +97,27 @@ async function handleDelete(sessionId: number) {
     </NTooltip>
 
     <div v-if="!collapsed" class="chat-list__header">
-      <div>
-        <NText strong class="block text-14px">历史会话</NText>
-      </div>
-      <NButton size="small" type="primary" circle aria-label="新建会话" @click="handleCreate">
-        <template #icon>
-          <icon-material-symbols:add />
-        </template>
+      <NButton type="primary" block class="chat-list__create" @click="handleCreate">
+        <template #icon><icon-material-symbols:add-rounded /></template>
+        新建会话
       </NButton>
+      <div class="chat-list__heading">
+        <NText strong>历史会话</NText>
+        <span>{{ sessions.length }}</span>
+      </div>
     </div>
 
     <NSpin v-if="!collapsed" :show="sessionLoading">
       <NScrollbar class="chat-list__scroll">
-        <div class="flex flex-col gap-2">
+        <div class="chat-list__sessions">
           <button
             v-for="session in sessions"
             :key="session.id"
             type="button"
-            class="group w-full rounded-6px px-3 py-2 text-left transition-colors"
-            :class="
-              activeSessionId === session.id
-                ? 'bg-primary/12 color-[rgb(var(--primary-color))]'
-                : 'hover:bg-#f1f3f7 dark:hover:bg-#24242a'
-            "
+            class="chat-list__session group"
+            :class="{ 'is-active': activeSessionId === session.id }"
             @click="handleSelect(session.id)"
+            @mouseenter="setTitleScrollDuration"
           >
             <div v-if="editingId === session.id" class="flex items-center gap-1">
               <NInput
@@ -123,8 +133,12 @@ async function handleDelete(sessionId: number) {
                 </template>
               </NButton>
             </div>
-            <div v-else class="flex items-center gap-2">
-              <NText class="min-w-0 flex-1 truncate text-14px">{{ session.title }}</NText>
+            <div v-else class="chat-list__session-row">
+              <icon-solar:chat-round-line-duotone class="chat-list__session-icon" />
+              <span class="chat-list__session-title" :title="session.title">
+                <NText class="chat-list__session-title-text">{{ session.title }}</NText>
+              </span>
+              <time>{{ formatSessionTime(session.updatedAt) }}</time>
               <NButton
                 size="tiny"
                 quaternary
@@ -158,8 +172,10 @@ async function handleDelete(sessionId: number) {
 
 <style scoped lang="scss">
 .chat-list {
-  width: 248px;
-  padding: 16px 12px 12px;
+  width: 264px;
+  border-color: #e4e9f0;
+  background: #fff;
+  padding: 14px 12px 12px;
   transition:
     width 180ms ease,
     padding 180ms ease;
@@ -173,31 +189,81 @@ async function handleDelete(sessionId: number) {
 }
 
 .chat-list__scroll {
-  height: calc(100vh - 174px);
+  height: calc(100vh - 188px);
 }
 
 .chat-list__header {
+  margin-bottom: 8px;
+  padding: 0 2px;
+}
+
+.chat-list__create {
+  --n-height: 40px !important;
+  --n-border-radius: 9px !important;
+  font-size: 14px;
+}
+
+.chat-list__heading {
   display: flex;
-  min-height: 48px;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 10px;
-  padding: 0 5px;
+  margin-top: 20px;
+  padding: 0 8px 8px;
+  color: #667085;
+  font-size: 12px;
 }
+
+.chat-list__heading span {
+  color: #98a2b3;
+  font-variant-numeric: tabular-nums;
+}
+
+.chat-list__sessions { display: flex; flex-direction: column; gap: 4px; }
+
+.chat-list__session {
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  padding: 10px;
+  text-align: left;
+  transition: 150ms ease;
+}
+
+.chat-list__session:hover { background: #f4f6f9; }
+.chat-list__session.is-active { border-color: #dbe5ff; background: #eef3ff; }
+.chat-list__session-row { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.chat-list__session-icon { flex: 0 0 auto; color: #8a96a8; font-size: 17px; }
+.chat-list__session-title { min-width: 0; flex: 1; overflow: hidden; container-type: inline-size; }
+.chat-list__session-title-text {
+  display: inline-block;
+  min-width: max-content;
+  font-size: 14px;
+  white-space: nowrap;
+  transition: transform 120ms ease-out;
+}
+.chat-list__session:hover .chat-list__session-title-text {
+  transform: translateX(min(0px, calc(100cqw - 100%)));
+  transition: transform var(--title-scroll-duration) linear 100ms;
+}
+.chat-list__session.is-active .chat-list__session-icon { color: #356ae6; }
+.chat-list__session time { flex: 0 0 auto; color: #98a2b3; font-size: 11px; font-variant-numeric: tabular-nums; }
+.chat-list__session:hover time { display: none; }
+.chat-list__session .n-button { transition: opacity 120ms ease; }
+.chat-list__session:not(:hover) .n-button { width: 0; margin: 0; overflow: hidden; }
 
 .chat-list__toggle {
   position: absolute;
   top: 50%;
-  right: -29px;
+  right: -17px;
   z-index: 10;
   display: flex;
-  width: 29px;
-  height: 36px;
+  width: 28px;
+  height: 28px;
   align-items: center;
   justify-content: center;
   border: 1px solid #e5e7eb;
-  border-radius: 0 8px 8px 0;
+  border-radius: 50%;
   background: #fff;
   color: #60636f;
   font-size: 20px;
@@ -220,6 +286,18 @@ async function handleDelete(sessionId: number) {
   border-color: #2b2b31;
   background: #18181c;
   color: #c9ccd6;
+}
+
+:global(.dark) .chat-list__session:hover { background: #24272d; }
+:global(.dark) .chat-list__session.is-active { border-color: #3c527f; background: #202b40; }
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-list__session-title-text { transition: none; }
+}
+
+.chat-list.is-collapsed .chat-list__toggle {
+  right: -28px;
+  border-radius: 0 8px 8px 0;
 }
 
 @media (max-width: 760px) {
