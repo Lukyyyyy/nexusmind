@@ -168,7 +168,7 @@ const local: App.I18n.Schema = {
     'organization-graph': '组织知识图谱',
     'org-tag': '组织标签',
     'model-config': '模型配置',
-    observability: '观测数据',
+    observability: '可观测数据',
     user: '用户管理',
     'personal-center': '个人中心'
   },

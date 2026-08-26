@@ -43,10 +43,10 @@ const bgColor = computed(() => {
         </header>
 
         <div class="brand-copy">
-          <h1>企业级 AI 知识库管理平台</h1>
-          <p class="role">NexusMind Team</p>
+          <h1>AI 知识库管理平台</h1>
+          <p class="role">Created by Lukyyyyy</p>
           <p>
-            用统一的知识组织、检索增强与智能问答能力，让团队资料沉淀为可复用的业务知识，并在安全可控的环境中快速获得答案。
+            将零散的团队资料沉淀为可检索、可关联、可追溯的知识资产，通过智能问答快速获得有依据的答案。
           </p>
         </div>
 
