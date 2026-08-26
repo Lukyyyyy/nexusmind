@@ -7,8 +7,6 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.luky.nexusmind.agent.AgentContext;
 import com.luky.nexusmind.agent.ToolDefinition;
 import com.luky.nexusmind.agent.ToolResult;
-import com.luky.nexusmind.model.FileUpload;
-import com.luky.nexusmind.service.DocumentService;
 import com.luky.nexusmind.service.KnowledgeGraphStoreService;
 import org.springframework.stereotype.Component;
 
@@ -20,13 +18,10 @@ public class KnowledgeGraphSearchTool implements AgentTool {
     private static final int RESULT_LIMIT = 10;
 
     private final KnowledgeGraphStoreService graphStore;
-    private final DocumentService documentService;
     private final ObjectMapper mapper;
 
-    public KnowledgeGraphSearchTool(KnowledgeGraphStoreService graphStore, DocumentService documentService,
-                                    ObjectMapper mapper) {
+    public KnowledgeGraphSearchTool(KnowledgeGraphStoreService graphStore, ObjectMapper mapper) {
         this.graphStore = graphStore;
-        this.documentService = documentService;
         this.mapper = mapper;
     }
 
@@ -47,10 +42,9 @@ public class KnowledgeGraphSearchTool implements AgentTool {
         String query = arguments.path("query").asText("").trim();
         if (query.isEmpty()) throw new IllegalArgumentException("query 不能为空");
         if (!graphStore.isEnabled()) return unavailable(callId);
-        List<FileUpload> accessible = documentService.getAccessibleFiles(context.userId(), "");
         List<KnowledgeGraphStoreService.GraphPath> paths = graphStore.search(
                 query.substring(0, Math.min(query.length(), 500)),
-                accessible.stream().map(FileUpload::getId).toList(), RESULT_LIMIT);
+                context.scopeFileIds(), RESULT_LIMIT);
         ObjectNode output = mapper.createObjectNode();
         output.put("status", "success");
         output.put("query", query);

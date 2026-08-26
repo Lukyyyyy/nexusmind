@@ -34,13 +34,14 @@ public class KnowledgeSearchTool implements AgentTool {
         schema.set("properties", properties);
         schema.set("required", mapper.createArrayNode().add("query"));
         return new ToolDefinition("search_knowledge_base",
-                "从用户有权限访问的知识库中检索相关文档片段。涉及企业制度、项目、流程或内部资料时使用。", schema);
+                "从用户有权限访问的知识库中检索相关文档片段。查询必须基于用户问题或已返回资料，不要猜测未提及的内容类别。", schema);
     }
 
     @Override
     public ToolResult execute(String callId, JsonNode arguments, AgentContext context) {
         String query = requiredText(arguments, "query");
-        List<SearchResult> results = searchService.searchWithPermission(query, context.userId(), RESULT_LIMIT);
+        List<SearchResult> results = searchService.searchWithPermission(
+                query, context.userId(), RESULT_LIMIT, context.scopeFileMd5s());
         ObjectNode output = mapper.createObjectNode();
         output.put("status", "success");
         output.put("query", query);

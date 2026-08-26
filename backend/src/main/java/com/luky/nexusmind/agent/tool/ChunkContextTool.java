@@ -8,9 +8,7 @@ import com.luky.nexusmind.agent.AgentContext;
 import com.luky.nexusmind.agent.ToolDefinition;
 import com.luky.nexusmind.agent.ToolResult;
 import com.luky.nexusmind.model.DocumentVector;
-import com.luky.nexusmind.model.FileUpload;
 import com.luky.nexusmind.repository.DocumentVectorRepository;
-import com.luky.nexusmind.service.DocumentService;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
@@ -20,12 +18,10 @@ import java.util.Map;
 @Component
 public class ChunkContextTool implements AgentTool {
     private final DocumentVectorRepository repository;
-    private final DocumentService documentService;
     private final ObjectMapper mapper;
 
-    public ChunkContextTool(DocumentVectorRepository repository, DocumentService documentService, ObjectMapper mapper) {
+    public ChunkContextTool(DocumentVectorRepository repository, ObjectMapper mapper) {
         this.repository = repository;
-        this.documentService = documentService;
         this.mapper = mapper;
     }
 
@@ -51,9 +47,7 @@ public class ChunkContextTool implements AgentTool {
         if (!context.isSourceAllowed(fileMd5, chunkId)) {
             throw new IllegalArgumentException("只能读取本轮检索结果的相邻切片");
         }
-        boolean accessible = documentService.getAccessibleFiles(context.userId(), "").stream()
-                .map(FileUpload::getFileMd5).anyMatch(fileMd5::equals);
-        if (!accessible) throw new IllegalArgumentException("无权访问该文档");
+        if (!context.isFileInScope(fileMd5)) throw new IllegalArgumentException("该文档不在当前问答范围内");
 
         int before = Math.max(0, Math.min(2, arguments.path("before").asInt(1)));
         int after = Math.max(0, Math.min(2, arguments.path("after").asInt(1)));

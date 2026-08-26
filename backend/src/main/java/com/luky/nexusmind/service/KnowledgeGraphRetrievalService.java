@@ -1,7 +1,6 @@
 package com.luky.nexusmind.service;
 
 import com.luky.nexusmind.entity.SearchResult;
-import com.luky.nexusmind.model.FileUpload;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -10,20 +9,17 @@ import java.util.stream.Collectors;
 @Service
 public class KnowledgeGraphRetrievalService {
     private final KnowledgeGraphStoreService graphStoreService;
-    private final DocumentService documentService;
 
-    public KnowledgeGraphRetrievalService(KnowledgeGraphStoreService graphStoreService,
-                                          DocumentService documentService) {
+    public KnowledgeGraphRetrievalService(KnowledgeGraphStoreService graphStoreService) {
         this.graphStoreService = graphStoreService;
-        this.documentService = documentService;
     }
 
-    public String buildContext(String userId, String query, List<SearchResult> searchResults) {
+    public String buildContext(String userId, String query, List<SearchResult> searchResults,
+                               List<Long> scopeFileIds) {
         if (!graphStoreService.isEnabled()) return "";
-        List<FileUpload> accessible = documentService.getAccessibleFiles(userId, "");
         String seed = buildSeed(query, searchResults);
         List<KnowledgeGraphStoreService.GraphPath> paths = graphStoreService.search(
-                seed, accessible.stream().map(FileUpload::getId).toList(), 8);
+                seed, scopeFileIds, 8);
         if (paths.isEmpty()) return "";
         StringBuilder context = new StringBuilder("以下是知识图谱找到的跨文档关系路径：\n");
         int pathIndex = 1;

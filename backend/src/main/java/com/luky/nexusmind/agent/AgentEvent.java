@@ -39,7 +39,7 @@ public record AgentEvent(
 
     public static AgentEvent answering() {
         return new AgentEvent("agent_step", "answering", "answer", "running",
-                "正在整理答案", "基于已获取的资料生成回答并标注来源", null, null, null, null);
+                "正在整理答案", "正在分析检索结果并生成回答", null, null, null, null);
     }
 
     private static String title(String tool) {

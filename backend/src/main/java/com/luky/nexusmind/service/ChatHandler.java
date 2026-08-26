@@ -2,15 +2,20 @@ package com.luky.nexusmind.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.luky.nexusmind.client.DeepSeekClient;
+import com.luky.nexusmind.client.GenerationCancellation;
 import com.luky.nexusmind.agent.AgentContext;
 import com.luky.nexusmind.agent.AgentEvent;
 import com.luky.nexusmind.agent.AgentOrchestrator;
 import com.luky.nexusmind.entity.SearchResult;
+import com.luky.nexusmind.model.ChatSession;
+import com.luky.nexusmind.model.FileUpload;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.core.task.TaskExecutor;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -22,6 +27,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Set;
 
 /**
  * 聊天处理服务
@@ -39,21 +45,24 @@ public class ChatHandler {
     private final AiTraceService aiTraceService;
     private final ChatSessionService chatSessionService;
     private final AgentOrchestrator agentOrchestrator;
+    private final ChatScopeService chatScopeService;
+    private final TaskExecutor chatTitleExecutor;
 
     @Autowired(required = false)
     private KnowledgeGraphRetrievalService graphRetrievalService;
     
     // 用于存储每个会话的完整响应
     private final Map<String, StringBuilder> responseBuilders = new ConcurrentHashMap<>();
-    // 停止标志 - 简单方案
-    private final Map<String, Boolean> stopFlags = new ConcurrentHashMap<>();
+    private final Map<String, GenerationCancellation> generationCancellations = new ConcurrentHashMap<>();
     private final Map<String, List<AgentEvent>> agentEvents = new ConcurrentHashMap<>();
+    private final Set<Long> titleTasks = ConcurrentHashMap.newKeySet();
 
     public ChatHandler(HybridSearchService searchService,
                       DeepSeekClient deepSeekClient,
                       AiTraceService aiTraceService,
                       ChatSessionService chatSessionService) {
-        this(searchService, deepSeekClient, aiTraceService, chatSessionService, (AgentOrchestrator) null);
+        this(searchService, deepSeekClient, aiTraceService, chatSessionService,
+                (AgentOrchestrator) null, null, Runnable::run);
     }
 
     @Autowired
@@ -61,21 +70,28 @@ public class ChatHandler {
                       DeepSeekClient deepSeekClient,
                       AiTraceService aiTraceService,
                       ChatSessionService chatSessionService,
-                      ObjectProvider<AgentOrchestrator> agentOrchestratorProvider) {
+                      ObjectProvider<AgentOrchestrator> agentOrchestratorProvider,
+                      ChatScopeService chatScopeService,
+                      @Qualifier("chatTitleExecutor") TaskExecutor chatTitleExecutor) {
         this(searchService, deepSeekClient, aiTraceService, chatSessionService,
-                agentOrchestratorProvider != null ? agentOrchestratorProvider.getIfAvailable() : null);
+                agentOrchestratorProvider != null ? agentOrchestratorProvider.getIfAvailable() : null,
+                chatScopeService, chatTitleExecutor);
     }
 
     private ChatHandler(HybridSearchService searchService,
                        DeepSeekClient deepSeekClient,
                        AiTraceService aiTraceService,
                        ChatSessionService chatSessionService,
-                       AgentOrchestrator agentOrchestrator) {
+                       AgentOrchestrator agentOrchestrator,
+                       ChatScopeService chatScopeService,
+                       TaskExecutor chatTitleExecutor) {
         this.searchService = searchService;
         this.deepSeekClient = deepSeekClient;
         this.aiTraceService = aiTraceService;
         this.chatSessionService = chatSessionService;
         this.agentOrchestrator = agentOrchestrator;
+        this.chatScopeService = chatScopeService;
+        this.chatTitleExecutor = chatTitleExecutor;
         this.objectMapper = new ObjectMapper();
     }
 
@@ -102,12 +118,22 @@ public class ChatHandler {
         AtomicBoolean traceFinished = new AtomicBoolean(false);
         long thinkingStartedAtNanos = System.nanoTime();
         AtomicLong thinkingDurationMs = new AtomicLong(-1L);
+        GenerationCancellation cancellation = new GenerationCancellation();
+        GenerationCancellation previous = generationCancellations.put(session.getId(), cancellation);
+        if (previous != null) previous.cancel();
         try {
             // 1. 校验并使用显式会话 ID
-            chatSessionService.getOwnedActiveSession(userId, chatSessionId);
+            ChatSession chatSession = chatSessionService.getOwnedActiveSession(userId, chatSessionId);
+            List<FileUpload> scopeFiles = chatScopeService == null
+                    ? List.of()
+                    : chatScopeService.resolveFiles(userId, chatSession);
             String conversationId = String.valueOf(chatSessionId);
             String effectiveTraceUserId = hasText(traceUserId) ? traceUserId : userId;
             logger.info("会话ID: {}, 用户ID: {}", conversationId, userId);
+            if (!chatSession.isTitleGenerated()) {
+                String titleInput = "新会话".equals(chatSession.getTitle()) ? userMessage : chatSession.getTitle();
+                generateTitleAsync(userId, chatSessionId, titleInput, session);
+            }
             traceSpan = aiTraceService.startSpan("rag.chat", effectiveTraceUserId, session.getId(), conversationId)
                     .attribute("nexusmind.input.length", userMessage != null ? userMessage.length() : 0);
             if (aiTraceService.shouldCaptureContent()) {
@@ -127,27 +153,46 @@ public class ChatHandler {
             // 优先使用受控 Tool Calling；模型或协议不兼容时自动回退原有固定 RAG。
             if (agentOrchestrator != null && agentOrchestrator.isEnabled()) {
                 try {
-                    AgentContext agentContext = new AgentContext(userId, chatSessionId, session.getId(), effectiveTraceUserId);
+                    AgentContext agentContext = new AgentContext(
+                            userId, chatSessionId, session.getId(), effectiveTraceUserId,
+                            scopeFiles.stream().map(FileUpload::getId).toList(),
+                            scopeFiles.stream().map(FileUpload::getFileMd5).toList());
                     currentTrace.attribute("nexusmind.agent.enabled", true);
-                    agentOrchestrator.run(userId, userMessage, history, agentContext,
-                            event -> recordAndSendAgentEvent(session, event),
+                    agentOrchestrator.run(userId, userMessage, history, agentContext, cancellation,
+                            event -> {
+                                if (!cancellation.isCancelled()) recordAndSendAgentEvent(session, event);
+                            },
                             chunk -> {
+                                if (cancellation.isCancelled()) return;
                                 captureThinkingDuration(thinkingStartedAtNanos, thinkingDurationMs);
                                 StringBuilder responseBuilder = responseBuilders.get(session.getId());
                                 if (responseBuilder != null) responseBuilder.append(chunk);
                                 sendResponseChunk(session, chunk);
                             },
                             error -> {
-                                handleError(session, error);
-                                currentTrace.error(error);
+                                if (!cancellation.isCancelled()) {
+                                    handleError(session, error);
+                                    currentTrace.error(error);
+                                }
                                 finishTrace(currentTrace, traceFinished);
-                                responseBuilders.remove(session.getId());
-                                agentEvents.remove(session.getId());
+                                cleanupGeneration(session, cancellation);
                             },
-                            () -> completeResponse(userId, chatSessionId, userMessage, session,
-                                    currentTrace, traceFinished, thinkingStartedAtNanos, thinkingDurationMs));
+                            () -> {
+                                if (cancellation.isCancelled()) {
+                                    completeCancelled(session, currentTrace, traceFinished, cancellation);
+                                } else {
+                                    completeResponse(userId, chatSessionId, userMessage, session,
+                                            currentTrace, traceFinished, thinkingStartedAtNanos, thinkingDurationMs,
+                                            agentContext::repairIncompleteSourceIds);
+                                    generationCancellations.remove(session.getId(), cancellation);
+                                }
+                            });
                     return;
                 } catch (RuntimeException agentError) {
+                    if (cancellation.isCancelled()) {
+                        completeCancelled(session, currentTrace, traceFinished, cancellation);
+                        return;
+                    }
                     logger.warn("Tool Calling 不可用，回退固定 RAG: {}", agentError.getMessage());
                     currentTrace.attribute("nexusmind.agent.fallback", true);
                     responseBuilders.put(session.getId(), new StringBuilder());
@@ -161,7 +206,9 @@ public class ChatHandler {
                     .attribute("nexusmind.search.top_k", 5)
                     .attribute("nexusmind.search.query.length", userMessage != null ? userMessage.length() : 0);
             try {
-                searchResults = searchService.searchWithPermission(userMessage, userId, 5);
+                searchResults = searchService.searchWithPermission(
+                        userMessage, userId, 5,
+                        scopeFiles.stream().map(FileUpload::getFileMd5).collect(java.util.stream.Collectors.toSet()));
                 searchSpan.attribute("nexusmind.search.results.count", searchResults.size());
             } catch (RuntimeException e) {
                 searchSpan.error(e);
@@ -172,6 +219,10 @@ public class ChatHandler {
                 searchSpan.close();
             }
             logger.debug("搜索结果数量: {}", searchResults.size());
+            if (cancellation.isCancelled()) {
+                completeCancelled(session, currentTrace, traceFinished, cancellation);
+                return;
+            }
             
             // 4. 构建上下文
             String context;
@@ -181,7 +232,8 @@ public class ChatHandler {
             try {
                 context = buildContext(searchResults);
                 if (graphRetrievalService != null) {
-                    String graphContext = graphRetrievalService.buildContext(userId, userMessage, searchResults);
+                    String graphContext = graphRetrievalService.buildContext(
+                            userId, userMessage, searchResults, scopeFiles.stream().map(FileUpload::getId).toList());
                     if (!graphContext.isBlank()) {
                         context = context + "\n" + graphContext;
                     }
@@ -197,6 +249,10 @@ public class ChatHandler {
             }
             currentTrace.attribute("nexusmind.search.results.count", searchResults.size())
                     .attribute("nexusmind.context.length", context.length());
+            if (cancellation.isCancelled()) {
+                completeCancelled(session, currentTrace, traceFinished, cancellation);
+                return;
+            }
             
             // 5. 调用 DeepSeek API 并处理流式响应
             logger.info("调用DeepSeek API生成回复");
@@ -205,7 +261,9 @@ public class ChatHandler {
                 effectiveTraceUserId,
                 session.getId(),
                 conversationId,
+                cancellation,
                 chunk -> {
+                    if (cancellation.isCancelled()) return;
                     captureThinkingDuration(thinkingStartedAtNanos, thinkingDurationMs);
                     // 累积响应内容
                     StringBuilder responseBuilder = responseBuilders.get(session.getId());
@@ -215,25 +273,31 @@ public class ChatHandler {
                     sendResponseChunk(session, chunk);
                 },
                 error -> {
-                    handleError(session, error);
-                    currentTrace.error(error);
+                    if (!cancellation.isCancelled()) {
+                        handleError(session, error);
+                        currentTrace.error(error);
+                    }
                     finishTrace(currentTrace, traceFinished);
-                    responseBuilders.remove(session.getId());
-                    agentEvents.remove(session.getId());
+                    cleanupGeneration(session, cancellation);
                 },
                 () -> {
-                    completeResponse(userId, chatSessionId, userMessage, session, currentTrace, traceFinished,
-                            thinkingStartedAtNanos, thinkingDurationMs);
+                    if (cancellation.isCancelled()) {
+                        completeCancelled(session, currentTrace, traceFinished, cancellation);
+                    } else {
+                        completeResponse(userId, chatSessionId, userMessage, session, currentTrace, traceFinished,
+                                thinkingStartedAtNanos, thinkingDurationMs, java.util.function.UnaryOperator.identity());
+                        generationCancellations.remove(session.getId(), cancellation);
+                    }
                 });
             
         } catch (Exception e) {
-            logger.error("处理消息错误: {}", e.getMessage(), e);
-            traceSpan.error(e);
+            if (!cancellation.isCancelled()) {
+                logger.error("处理消息错误: {}", e.getMessage(), e);
+                traceSpan.error(e);
+                handleError(session, e);
+            }
             finishTrace(traceSpan, traceFinished);
-            handleError(session, e);
-            // 清理会话响应构建器
-            responseBuilders.remove(session.getId());
-            agentEvents.remove(session.getId());
+            cleanupGeneration(session, cancellation);
         } finally {
             traceSpan.close();
         }
@@ -246,7 +310,8 @@ public class ChatHandler {
                                   AiTraceService.TraceSpan currentTrace,
                                   AtomicBoolean traceFinished,
                                   long thinkingStartedAtNanos,
-                                  AtomicLong thinkingDurationMs) {
+                                  AtomicLong thinkingDurationMs,
+                                  java.util.function.UnaryOperator<String> responseNormalizer) {
         try {
             StringBuilder responseBuilder = responseBuilders.get(session.getId());
             if (responseBuilder == null) {
@@ -257,7 +322,9 @@ public class ChatHandler {
                 return;
             }
 
-            String completeResponse = responseBuilder.toString();
+            String rawResponse = responseBuilder.toString();
+            String completeResponse = responseNormalizer.apply(rawResponse);
+            if (!completeResponse.equals(rawResponse)) sendContentReplacement(session, completeResponse);
             currentTrace.attribute("output.length", completeResponse.length());
             if (aiTraceService.shouldCaptureContent()) {
                 currentTrace.attribute("output.value", abbreviate(completeResponse, 2000));
@@ -281,6 +348,21 @@ public class ChatHandler {
         }
     }
 
+    private void completeCancelled(WebSocketSession session,
+                                   AiTraceService.TraceSpan trace,
+                                   AtomicBoolean traceFinished,
+                                   GenerationCancellation cancellation) {
+        trace.attribute("nexusmind.trace.end_reason", "user_cancelled");
+        cleanupGeneration(session, cancellation);
+        finishTrace(trace, traceFinished);
+    }
+
+    private void cleanupGeneration(WebSocketSession session, GenerationCancellation cancellation) {
+        if (!generationCancellations.remove(session.getId(), cancellation)) return;
+        responseBuilders.remove(session.getId());
+        agentEvents.remove(session.getId());
+    }
+
     private void persistCompletedExchange(String userId,
                                           Long chatSessionId,
                                           String userMessage,
@@ -288,18 +370,46 @@ public class ChatHandler {
                                           WebSocketSession session,
                                           long thinkingDurationMs) {
         String agentTrace = serializeAgentTrace(session.getId());
-        boolean firstExchange = chatSessionService.appendCompletedExchange(
+        chatSessionService.appendCompletedExchange(
                 userId, chatSessionId, userMessage, completeResponse, null, agentTrace, thinkingDurationMs);
         logger.info("对话已持久化到数据库，会话ID: {}", chatSessionId);
-        if (!firstExchange) {
+    }
+
+    private void generateTitleAsync(String userId,
+                                    Long chatSessionId,
+                                    String userMessage,
+                                    WebSocketSession session) {
+        if (!titleTasks.add(chatSessionId)) {
             return;
         }
-        new Thread(() -> {
-            String title = deepSeekClient.generateTitle(userId, userMessage, completeResponse);
-            if (chatSessionService.updateGeneratedTitle(userId, chatSessionId, title)) {
-                sendTitleUpdateNotification(session, chatSessionId, title);
+        try {
+            String fallback = chatSessionService.ensureFallbackTitle(userId, chatSessionId, userMessage);
+            if (fallback != null) {
+                sendTitleUpdateNotification(session, chatSessionId, fallback);
             }
-        }, "chat-title-" + chatSessionId).start();
+            chatTitleExecutor.execute(() -> {
+                try {
+                    String title = deepSeekClient.generateTitle(userId, userMessage);
+                    if (!hasText(title)) {
+                        logger.warn("标题模型未返回有效内容，会话ID: {}", chatSessionId);
+                        return;
+                    }
+                    String storedTitle = chatSessionService.updateGeneratedTitle(userId, chatSessionId, title);
+                    if (storedTitle != null) {
+                        sendTitleUpdateNotification(session, chatSessionId, storedTitle);
+                    } else {
+                        logger.warn("标题模型输出未通过校验或会话已改名，会话ID: {}", chatSessionId);
+                    }
+                } catch (RuntimeException e) {
+                    logger.warn("更新会话标题失败，会话ID: {}, 错误: {}", chatSessionId, e.getMessage());
+                } finally {
+                    titleTasks.remove(chatSessionId);
+                }
+            });
+        } catch (RuntimeException e) {
+            titleTasks.remove(chatSessionId);
+            logger.warn("会话标题初始化失败，会话ID: {}, 错误: {}", chatSessionId, e.getMessage());
+        }
     }
 
     private void captureThinkingDuration(long startedAtNanos, AtomicLong durationMs) {
@@ -329,17 +439,14 @@ public class ChatHandler {
 
     private void sendResponseChunk(WebSocketSession session, String chunk) {
         try {
-            // 检查是否需要停止发送
-            if (Boolean.TRUE.equals(stopFlags.get(session.getId()))) {
-                logger.debug("检测到停止标志，跳过发送响应块");
-                return;
-            }
+            GenerationCancellation cancellation = generationCancellations.get(session.getId());
+            if (cancellation != null && cancellation.isCancelled()) return;
             
             // 将chunk包装成JSON格式，匹配前端期望的数据结构
             Map<String, String> chunkResponse = Map.of("chunk", chunk);
             String jsonChunk = objectMapper.writeValueAsString(chunkResponse);
             logger.debug("发送响应块到会话 {}: {}", session.getId(), jsonChunk);
-            session.sendMessage(new TextMessage(jsonChunk));
+            sendMessage(session, jsonChunk);
         } catch (Exception e) {
             logger.error("发送响应块失败: {}", e.getMessage(), e);
         }
@@ -361,7 +468,7 @@ public class ChatHandler {
             }
         }
         try {
-            session.sendMessage(new TextMessage(objectMapper.writeValueAsString(event)));
+            sendMessage(session, objectMapper.writeValueAsString(event));
         } catch (Exception e) {
             logger.warn("发送 Agent 状态事件失败: {}", e.getMessage());
         }
@@ -390,6 +497,15 @@ public class ChatHandler {
         sendCompletionNotification(session, null);
     }
 
+    private void sendContentReplacement(WebSocketSession session, String content) {
+        try {
+            sendMessage(session, objectMapper.writeValueAsString(
+                    Map.of("type", "content_replaced", "content", content)));
+        } catch (Exception e) {
+            logger.warn("发送校正后的回答失败: {}", e.getMessage());
+        }
+    }
+
     private void sendCompletionNotification(WebSocketSession session, Long chatSessionId) {
         try {
             long currentTime = System.currentTimeMillis();
@@ -404,7 +520,7 @@ public class ChatHandler {
             }
             String notificationJson = objectMapper.writeValueAsString(notification);
             logger.info("发送完成通知到会话 {}: {}", session.getId(), notificationJson);
-            session.sendMessage(new TextMessage(notificationJson));
+            sendMessage(session, notificationJson);
             logger.info("已发送响应完成通知到会话: {}", session.getId());
         } catch (Exception e) {
             logger.error("发送完成通知失败: {}", e.getMessage(), e);
@@ -418,7 +534,7 @@ public class ChatHandler {
             notification.put("sessionId", chatSessionId);
             notification.put("title", title);
             String notificationJson = objectMapper.writeValueAsString(notification);
-            session.sendMessage(new TextMessage(notificationJson));
+            sendMessage(session, notificationJson);
         } catch (Exception e) {
             logger.warn("发送标题更新通知失败，会话ID: {}, 错误: {}", chatSessionId, e.getMessage());
         }
@@ -430,7 +546,7 @@ public class ChatHandler {
             Map<String, String> errorResponse = Map.of("error", "AI服务暂时不可用，请稍后重试");
             String errorJson = objectMapper.writeValueAsString(errorResponse);
             logger.error("发送错误消息到会话 {}: {}", session.getId(), errorJson);
-            session.sendMessage(new TextMessage(errorJson));
+            sendMessage(session, errorJson);
             logger.error("已发送错误消息到会话: {}", session.getId());
         } catch (Exception e) {
             logger.error("发送错误消息失败: {}", e.getMessage(), e);
@@ -440,6 +556,12 @@ public class ChatHandler {
     private void finishTrace(AiTraceService.TraceSpan span, AtomicBoolean finished) {
         if (finished.compareAndSet(false, true)) {
             span.end();
+        }
+    }
+
+    private void sendMessage(WebSocketSession session, String payload) throws java.io.IOException {
+        synchronized (session) {
+            session.sendMessage(new TextMessage(payload));
         }
     }
 
@@ -461,8 +583,8 @@ public class ChatHandler {
         String sessionId = session.getId();
         logger.info("收到停止请求，用户ID: {}, 会话ID: {}", userId, sessionId);
         
-        // 设置停止标志
-        stopFlags.put(sessionId, true);
+        GenerationCancellation cancellation = generationCancellations.get(sessionId);
+        if (cancellation != null) cancellation.cancel();
         
         // 发送停止确认
         try {
@@ -475,21 +597,11 @@ public class ChatHandler {
             );
             String stopJson = objectMapper.writeValueAsString(response);
             logger.info("发送停止确认到会话 {}: {}", sessionId, stopJson);
-            session.sendMessage(new TextMessage(stopJson));
+            sendMessage(session, stopJson);
             logger.info("已发送停止确认，会话ID: {}", sessionId);
         } catch (Exception e) {
             logger.error("发送停止确认失败: {}", e.getMessage(), e);
         }
         
-        // 清理停止标志（延迟清理，避免影响当前响应）
-        new Thread(() -> {
-            try {
-                Thread.sleep(2000); // 等待2秒
-                stopFlags.remove(sessionId);
-                logger.debug("已清理停止标志，会话ID: {}", sessionId);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        }).start();
     }
 }

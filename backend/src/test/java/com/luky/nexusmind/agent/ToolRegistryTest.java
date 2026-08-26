@@ -54,4 +54,15 @@ class ToolRegistryTest {
         assertFalse(second.isSourceAllowed("abc", 7));
         assertEquals("kb:abc:7", AgentContext.sourceId("abc", 7));
     }
+
+    @Test
+    void repairsOnlyIncompleteSourcesWithRetrievedChunks() {
+        AgentContext context = new AgentContext("alice", 1L, "ws-1", "42");
+        String md5 = "850dfc7a9922a9d33297b18f1e3b7447";
+        context.allowSource(md5, 24);
+        context.allowSource(md5, 3);
+
+        assertEquals("source kb:" + md5 + ":24", context.repairIncompleteSourceIds("source kb:" + md5));
+        assertEquals("source kb:" + md5 + ":3", context.repairIncompleteSourceIds("source kb:" + md5 + ":3"));
+    }
 }
