@@ -72,6 +72,7 @@ jwt:
 admin:
   username: ${ADMIN_USERNAME:admin}
   password: ${ADMIN_PASSWORD:${MYSQL_PASSWORD:admin123}}
+  email: ${ADMIN_EMAIL:}
   primary-org: default
   org-tags: default,admin
 
@@ -131,4 +132,3 @@ langfuse:
     secret-key: ${LANGFUSE_SECRET_KEY:}
     environment: ${LANGFUSE_TRACING_ENVIRONMENT:dev}
     capture-content: ${LANGFUSE_CAPTURE_CONTENT:false}
-

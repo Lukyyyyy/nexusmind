@@ -24,6 +24,15 @@ public class OrganizationTag {
     @Column(name = "parent_tag", length = 255)
     private String parentTag; // 父标签ID
 
+    @Column(name = "joinable", nullable = false)
+    private boolean joinable = true;
+
+    @Column(name = "archived_at")
+    private LocalDateTime archivedAt;
+
+    @Column(name = "archive_reason", length = 200)
+    private String archiveReason;
+
     @ManyToOne
     @JoinColumn(name = "created_by", nullable = false)
     private User createdBy; // 创建者ID
@@ -33,4 +42,8 @@ public class OrganizationTag {
 
     @UpdateTimestamp
     private LocalDateTime updatedAt; // 更新时间
-} 
+
+    public boolean isArchived() {
+        return archivedAt != null;
+    }
+}

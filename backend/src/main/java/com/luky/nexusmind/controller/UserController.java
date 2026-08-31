@@ -4,6 +4,7 @@ import com.luky.nexusmind.exception.CustomException;
 import com.luky.nexusmind.model.User;
 import com.luky.nexusmind.repository.UserRepository;
 import com.luky.nexusmind.service.UserService;
+import com.luky.nexusmind.service.EmailVerificationService;
 import com.luky.nexusmind.utils.JwtUtils;
 import com.luky.nexusmind.utils.LogUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -30,51 +31,63 @@ public class UserController {
     @Autowired
     private UserRepository userRepository;
 
-    // 用户注册接口
-    // 接收用户请求体中的用户名和密码，并调用用户服务进行注册
+    @Autowired
+    private EmailVerificationService emailVerificationService;
+
+    @PostMapping("/registration-code")
+    public ResponseEntity<?> registrationCode(@RequestBody RegistrationEmailRequest request) {
+        emailVerificationService.requestRegistration(request.email());
+        return ResponseEntity.ok(Map.of("code", 200, "message", "验证码已发送"));
+    }
+
+    @PostMapping("/password-reset-code")
+    public ResponseEntity<?> passwordResetCode(@RequestBody RegistrationEmailRequest request) {
+        emailVerificationService.requestPasswordReset(request.email());
+        return ResponseEntity.ok(Map.of("code", 200, "message", "验证码已发送"));
+    }
+
+    @PostMapping("/reset-password")
+    public ResponseEntity<?> resetPassword(@RequestBody ResetPasswordRequest request) {
+        Long userId = userService.resetPassword(request.email(), request.verificationCode(), request.password());
+        jwtUtils.invalidateAllUserTokens(userId.toString());
+        return ResponseEntity.ok(Map.of("code", 200, "message", "密码已重置，请重新登录"));
+    }
+
     @PostMapping("/register")
-    public ResponseEntity<?> register(@RequestBody UserRequest request) {
+    public ResponseEntity<?> register(@RequestBody RegisterRequest request) {
         LogUtils.PerformanceMonitor monitor = LogUtils.startPerformanceMonitor("USER_REGISTER");
         try {
-            if (request.username() == null || request.username().isEmpty() ||
-                    request.password() == null || request.password().isEmpty()) {
-                LogUtils.logUserOperation("anonymous", "REGISTER", "validation", "FAILED_EMPTY_PARAMS");
-                monitor.end("注册失败：参数为空");
-                return ResponseEntity.badRequest().body(Map.of("code", 400, "message", "Username and password cannot be empty"));
-            }
-            
-            userService.registerUser(request.username(), request.password());
-            LogUtils.logUserOperation(request.username(), "REGISTER", "user_creation", "SUCCESS");
+            User user = userService.registerVerifiedUser(request.email(), request.verificationCode(), request.password());
+            LogUtils.logUserOperation(user.getUsername(), "REGISTER", "user_creation", "SUCCESS");
             monitor.end("注册成功");
-            
-            return ResponseEntity.ok(Map.of("code", 200, "message", "User registered successfully"));
+            return ResponseEntity.ok(Map.of("code", 200, "message", "注册成功"));
         } catch (CustomException e) {
-            LogUtils.logBusinessError("USER_REGISTER", request.username(), "用户注册失败: %s", e, e.getMessage());
+            LogUtils.logBusinessError("USER_REGISTER", "anonymous", "用户注册失败: %s", e, e.getMessage());
             monitor.end("注册失败: " + e.getMessage());
             return ResponseEntity.status(e.getStatus()).body(Map.of("code", e.getStatus().value(), "message", e.getMessage()));
         } catch (Exception e) {
-            LogUtils.logBusinessError("USER_REGISTER", request.username(), "用户注册异常: %s", e, e.getMessage());
+            LogUtils.logBusinessError("USER_REGISTER", "anonymous", "用户注册异常: %s", e, e.getMessage());
             monitor.end("注册异常: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("code", 500, "message", "Internal server error"));
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("code", 500, "message", "服务器内部错误"));
         }
     }
 
     // 用户登录接口
     // 验证用户身份并生成JWT令牌
     @PostMapping("/login")
-    public ResponseEntity<?> login(@RequestBody UserRequest request) {
+    public ResponseEntity<?> login(@RequestBody LoginRequest request) {
         LogUtils.PerformanceMonitor monitor = LogUtils.startPerformanceMonitor("USER_LOGIN");
         try {
-            if (request.username() == null || request.username().isEmpty() ||
+            if (request.email() == null || request.email().isEmpty() ||
                     request.password() == null || request.password().isEmpty()) {
                 LogUtils.logUserOperation("anonymous", "LOGIN", "validation", "FAILED_EMPTY_PARAMS");
-                return ResponseEntity.badRequest().body(Map.of("code", 400, "message", "Username and password cannot be empty"));
+                return ResponseEntity.badRequest().body(Map.of("code", 400, "message", "邮箱和密码不能为空"));
             }
             
-            String username = userService.authenticateUser(request.username(), request.password());
+            String username = userService.authenticateUser(request.email(), request.password());
             if (username == null) {
-                LogUtils.logUserOperation(request.username(), "LOGIN", "authentication", "FAILED_INVALID_CREDENTIALS");
-                return ResponseEntity.status(401).body(Map.of("code", 401, "message", "Invalid credentials"));
+                LogUtils.logUserOperation("anonymous", "LOGIN", "authentication", "FAILED_INVALID_CREDENTIALS");
+                return ResponseEntity.status(401).body(Map.of("code", 401, "message", "邮箱或密码错误"));
             }
             
             String token = jwtUtils.generateToken(username);
@@ -82,18 +95,18 @@ public class UserController {
             LogUtils.logUserOperation(username, "LOGIN", "token_generation", "SUCCESS");
             monitor.end("登录成功");
             
-            return ResponseEntity.ok(Map.of("code", 200, "message", "Login successful", "data", Map.of(
+            return ResponseEntity.ok(Map.of("code", 200, "message", "登录成功", "data", Map.of(
                 "token", token,
                 "refreshToken", refreshToken
             )));
         } catch (CustomException e) {
-            LogUtils.logBusinessError("USER_LOGIN", request.username(), "登录失败: %s", e, e.getMessage());
+            LogUtils.logBusinessError("USER_LOGIN", "anonymous", "登录失败: %s", e, e.getMessage());
             monitor.end("登录失败: " + e.getMessage());
             return ResponseEntity.status(e.getStatus()).body(Map.of("code", e.getStatus().value(), "message", e.getMessage()));
         } catch (Exception e) {
-            LogUtils.logBusinessError("USER_LOGIN", request.username(), "登录异常: %s", e, e.getMessage());
+            LogUtils.logBusinessError("USER_LOGIN", "anonymous", "登录异常: %s", e, e.getMessage());
             monitor.end("登录异常: " + e.getMessage());
-            return ResponseEntity.status(500).body(Map.of("code", 500, "message", "Internal server error"));
+            return ResponseEntity.status(500).body(Map.of("code", 500, "message", "服务器内部错误"));
         }
     }
 
@@ -107,17 +120,20 @@ public class UserController {
             if (username == null || username.isEmpty()) {
                 LogUtils.logUserOperation("anonymous", "GET_USER_INFO", "token_validation", "FAILED_INVALID_TOKEN");
                 monitor.end("获取用户信息失败：无效token");
-                throw new CustomException("Invalid token", HttpStatus.UNAUTHORIZED);
+                throw new CustomException("登录令牌无效", HttpStatus.UNAUTHORIZED);
             }
 
             User user = userRepository.findByUsername(username)
-                    .orElseThrow(() -> new CustomException("User not found", HttpStatus.NOT_FOUND));
+                    .orElseThrow(() -> new CustomException("用户不存在", HttpStatus.NOT_FOUND));
 
             // 手动构建返回对象，不包含 password 字段
             Map<String, Object> displayUserData = new LinkedHashMap<>();
             displayUserData.put("id", user.getId());
             displayUserData.put("username", user.getUsername());
+            displayUserData.put("displayName", user.getDisplayName() == null ? user.getUsername() : user.getDisplayName());
             displayUserData.put("role", user.getRole());
+            displayUserData.put("email", user.getEmail());
+            displayUserData.put("emailVerified", user.getEmailVerifiedAt() != null);
             
             // 添加组织标签信息
             if (user.getOrgTags() != null && !user.getOrgTags().isEmpty()) {
@@ -137,7 +153,7 @@ public class UserController {
             monitor.end("获取用户信息成功");
 
             // 返回响应
-            return ResponseEntity.ok(Map.of("code", 200, "message", "Get user detail successful", "data", displayUserData));
+            return ResponseEntity.ok(Map.of("code", 200, "message", "获取用户详情成功", "data", displayUserData));
         } catch (CustomException e) {
             LogUtils.logBusinessError("GET_USER_INFO", username, "获取用户信息失败: %s", e, e.getMessage());
             monitor.end("获取用户信息失败: " + e.getMessage());
@@ -145,8 +161,16 @@ public class UserController {
         } catch (Exception e) {
             LogUtils.logBusinessError("GET_USER_INFO", username, "获取用户信息异常: %s", e, e.getMessage());
             monitor.end("获取用户信息异常: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("code", 500, "message", "Internal server error"));
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("code", 500, "message", "服务器内部错误"));
         }
+    }
+
+    @PutMapping("/display-name")
+    public ResponseEntity<?> updateDisplayName(@RequestHeader("Authorization") String token,
+                                               @RequestBody DisplayNameRequest request) {
+        String username = jwtUtils.extractUsernameFromToken(token.replace("Bearer ", ""));
+        String displayName = userService.updateDisplayName(username, request.displayName());
+        return ResponseEntity.ok(Map.of("code", 200, "message", "昵称已更新", "data", Map.of("displayName", displayName)));
     }
     
     // 获取用户组织标签信息
@@ -159,7 +183,7 @@ public class UserController {
             if (username == null || username.isEmpty()) {
                 LogUtils.logUserOperation("anonymous", "GET_ORG_TAGS", "token_validation", "FAILED_INVALID_TOKEN");
                 monitor.end("获取组织标签失败：无效token");
-                throw new CustomException("Invalid token", HttpStatus.UNAUTHORIZED);
+                throw new CustomException("登录令牌无效", HttpStatus.UNAUTHORIZED);
             }
             
             Map<String, Object> orgTagsInfo = userService.getUserOrgTags(username);
@@ -169,7 +193,7 @@ public class UserController {
             
             return ResponseEntity.ok(Map.of(
                 "code", 200, 
-                "message", "Get user organization tags successful", 
+                "message", "获取用户组织标签成功",
                 "data", orgTagsInfo
             ));
         } catch (CustomException e) {
@@ -179,7 +203,7 @@ public class UserController {
         } catch (Exception e) {
             LogUtils.logBusinessError("GET_USER_ORG_TAGS", username, "获取用户组织标签异常: %s", e, e.getMessage());
             monitor.end("获取组织标签异常: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("code", 500, "message", "Internal server error"));
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("code", 500, "message", "服务器内部错误"));
         }
     }
     
@@ -193,13 +217,13 @@ public class UserController {
             if (username == null || username.isEmpty()) {
                 LogUtils.logUserOperation("anonymous", "SET_PRIMARY_ORG", "token_validation", "FAILED_INVALID_TOKEN");
                 monitor.end("设置主组织失败：无效token");
-                throw new CustomException("Invalid token", HttpStatus.UNAUTHORIZED);
+                throw new CustomException("登录令牌无效", HttpStatus.UNAUTHORIZED);
             }
             
             if (request.primaryOrg() == null || request.primaryOrg().isEmpty()) {
                 LogUtils.logUserOperation(username, "SET_PRIMARY_ORG", "validation", "FAILED_EMPTY_ORG");
                 monitor.end("设置主组织失败：组织标签为空");
-                return ResponseEntity.badRequest().body(Map.of("code", 400, "message", "Primary organization tag cannot be empty"));
+                return ResponseEntity.badRequest().body(Map.of("code", 400, "message", "主组织标签不能为空"));
             }
             
             userService.setUserPrimaryOrg(username, request.primaryOrg());
@@ -207,7 +231,7 @@ public class UserController {
             LogUtils.logUserOperation(username, "SET_PRIMARY_ORG", request.primaryOrg(), "SUCCESS");
             monitor.end("设置主组织成功");
             
-            return ResponseEntity.ok(Map.of("code", 200, "message", "Primary organization set successfully"));
+            return ResponseEntity.ok(Map.of("code", 200, "message", "主组织设置成功"));
         } catch (CustomException e) {
             LogUtils.logBusinessError("SET_PRIMARY_ORG", username, "设置主组织失败: %s", e, e.getMessage());
             monitor.end("设置主组织失败: " + e.getMessage());
@@ -215,7 +239,7 @@ public class UserController {
         } catch (Exception e) {
             LogUtils.logBusinessError("SET_PRIMARY_ORG", username, "设置主组织异常: %s", e, e.getMessage());
             monitor.end("设置主组织异常: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("code", 500, "message", "Internal server error"));
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("code", 500, "message", "服务器内部错误"));
         }
     }
 
@@ -262,7 +286,7 @@ public class UserController {
             if (token == null || !token.startsWith("Bearer ")) {
                 LogUtils.logUserOperation("anonymous", "LOGOUT", "validation", "FAILED_INVALID_TOKEN");
                 monitor.end("登出失败：token格式无效");
-                return ResponseEntity.badRequest().body(Map.of("code", 400, "message", "Invalid token format"));
+                return ResponseEntity.badRequest().body(Map.of("code", 400, "message", "登录令牌格式无效"));
             }
 
             String jwtToken = token.replace("Bearer ", "");
@@ -271,7 +295,7 @@ public class UserController {
             if (username == null || username.isEmpty()) {
                 LogUtils.logUserOperation("anonymous", "LOGOUT", "token_extraction", "FAILED_NO_USERNAME");
                 monitor.end("登出失败：无法提取用户名");
-                return ResponseEntity.status(401).body(Map.of("code", 401, "message", "Invalid token"));
+                return ResponseEntity.status(401).body(Map.of("code", 401, "message", "登录令牌无效"));
             }
 
             // 使当前token失效
@@ -280,11 +304,11 @@ public class UserController {
             LogUtils.logUserOperation(username, "LOGOUT", "token_invalidation", "SUCCESS");
             monitor.end("登出成功");
 
-            return ResponseEntity.ok(Map.of("code", 200, "message", "Logout successful"));
+            return ResponseEntity.ok(Map.of("code", 200, "message", "退出登录成功"));
         } catch (Exception e) {
             LogUtils.logBusinessError("USER_LOGOUT", username, "登出异常: %s", e, e.getMessage());
             monitor.end("登出异常: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("code", 500, "message", "Internal server error"));
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("code", 500, "message", "服务器内部错误"));
         }
     }
 
@@ -297,7 +321,7 @@ public class UserController {
             if (token == null || !token.startsWith("Bearer ")) {
                 LogUtils.logUserOperation("anonymous", "LOGOUT_ALL", "validation", "FAILED_INVALID_TOKEN");
                 monitor.end("批量登出失败：token格式无效");
-                return ResponseEntity.badRequest().body(Map.of("code", 400, "message", "Invalid token format"));
+                return ResponseEntity.badRequest().body(Map.of("code", 400, "message", "登录令牌格式无效"));
             }
 
             String jwtToken = token.replace("Bearer ", "");
@@ -307,7 +331,7 @@ public class UserController {
             if (username == null || username.isEmpty() || userId == null) {
                 LogUtils.logUserOperation("anonymous", "LOGOUT_ALL", "token_extraction", "FAILED_NO_USER_INFO");
                 monitor.end("批量登出失败：无法提取用户信息");
-                return ResponseEntity.status(401).body(Map.of("code", 401, "message", "Invalid token"));
+                return ResponseEntity.status(401).body(Map.of("code", 401, "message", "登录令牌无效"));
             }
 
             // 使用户所有token失效
@@ -316,17 +340,20 @@ public class UserController {
             LogUtils.logUserOperation(username, "LOGOUT_ALL", "all_tokens_invalidation", "SUCCESS");
             monitor.end("批量登出成功");
 
-            return ResponseEntity.ok(Map.of("code", 200, "message", "Logout from all devices successful"));
+            return ResponseEntity.ok(Map.of("code", 200, "message", "已退出所有设备"));
         } catch (Exception e) {
             LogUtils.logBusinessError("USER_LOGOUT_ALL", username, "批量登出异常: %s", e, e.getMessage());
             monitor.end("批量登出异常: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("code", 500, "message", "Internal server error"));
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("code", 500, "message", "服务器内部错误"));
         }
     }
 }
 
-// 用户请求记录类
-record UserRequest(String username, String password) {}
+record RegistrationEmailRequest(String email) {}
+record RegisterRequest(String email, String verificationCode, String password) {}
+record ResetPasswordRequest(String email, String verificationCode, String password) {}
+record LoginRequest(String email, String password) {}
+record DisplayNameRequest(String displayName) {}
 
 // 主组织标签请求记录类
 record PrimaryOrgRequest(String primaryOrg) {}

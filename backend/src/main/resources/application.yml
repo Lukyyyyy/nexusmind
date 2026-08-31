@@ -10,6 +10,10 @@ server:
     accept-count: 200
     connection-timeout: 30s
 spring:
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 0
   application:
     name: NexusMind
   config:
@@ -106,8 +110,30 @@ jwt:
 admin:
   username: ${ADMIN_USERNAME:admin}
   password: ${ADMIN_PASSWORD:${MYSQL_PASSWORD:admin123}}
+  email: ${ADMIN_EMAIL:}
   primary-org: default
   org-tags: default,admin
+
+app:
+  public-url: ${APP_PUBLIC_URL:http://localhost:9527}
+
+smtp:
+  crypto-secret: ${SMTP_CRYPTO_SECRET:}
+
+mail:
+  provider: ${MAIL_PROVIDER:smtp}
+  tencent-ses:
+    secret-id: ${TENCENT_SES_SECRET_ID:}
+    secret-key: ${TENCENT_SES_SECRET_KEY:}
+    region: ${TENCENT_SES_REGION:ap-hongkong}
+    from-address: ${TENCENT_SES_FROM_ADDRESS:}
+    verification-template-id: ${TENCENT_SES_VERIFICATION_TEMPLATE_ID:0}
+    organization-application-template-id: ${TENCENT_SES_ORGANIZATION_APPLICATION_TEMPLATE_ID:0}
+    organization-result-template-id: ${TENCENT_SES_ORGANIZATION_RESULT_TEMPLATE_ID:0}
+    membership-change-template-id: ${TENCENT_SES_MEMBERSHIP_CHANGE_TEMPLATE_ID:0}
+    role-change-template-id: ${TENCENT_SES_ROLE_CHANGE_TEMPLATE_ID:0}
+    email-changed-template-id: ${TENCENT_SES_EMAIL_CHANGED_TEMPLATE_ID:0}
+    test-template-id: ${TENCENT_SES_TEST_TEMPLATE_ID:0}
 
 file:
   parsing:
@@ -182,6 +208,13 @@ langfuse:
     capture-content: ${LANGFUSE_CAPTURE_CONTENT:true}
 
 ai:
+  retrieval:
+    fusion-mode: ${AI_RETRIEVAL_FUSION_MODE:rrf} # rrf=双路召回+RRF融合(默认)；legacy=旧版单请求融合回退
+    rrf-k: 60 # RRF 平滑常数
+    rank-window: 60 # 每路召回窗口
+    rerank-enabled: ${AI_RETRIEVAL_RERANK_ENABLED:true} # 无可用 RERANK 模型配置时自动跳过
+    rerank-top-n: 30 # 全局重排候选窗口（可被模型配置的 top_n 覆盖）
+    rerank-timeout-ms: ${AI_RETRIEVAL_RERANK_TIMEOUT_MS:8000} # rerank 超时后保持融合原序（留足模型冷启动余量）
   agent:
     tool-calling-enabled: ${AI_AGENT_TOOL_CALLING_ENABLED:true}
     max-tool-rounds: ${AI_AGENT_MAX_TOOL_ROUNDS:3}

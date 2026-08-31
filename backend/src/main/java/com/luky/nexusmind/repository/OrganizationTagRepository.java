@@ -9,5 +9,6 @@ import java.util.Optional;
 public interface OrganizationTagRepository extends JpaRepository<OrganizationTag, String> {
     Optional<OrganizationTag> findByTagId(String tagId);
     List<OrganizationTag> findByParentTag(String parentTag);
+    boolean existsByNameAndParentTag(String name, String parentTag);
     boolean existsByTagId(String tagId);
-} 
+}

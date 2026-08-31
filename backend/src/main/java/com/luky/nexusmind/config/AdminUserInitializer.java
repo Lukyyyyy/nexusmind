@@ -11,6 +11,8 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
+import java.time.LocalDateTime;
+import java.util.Locale;
 import java.util.Optional;
 
 /**
@@ -31,6 +33,9 @@ public class AdminUserInitializer implements CommandLineRunner {
     @Value("${admin.password:admin123}")
     private String adminPassword;
 
+    @Value("${admin.email:}")
+    private String adminEmail;
+
     @Value("${admin.primary-org:default}")
     private String adminPrimaryOrg;
 
@@ -43,7 +48,23 @@ public class AdminUserInitializer implements CommandLineRunner {
         Optional<User> existingAdmin = userRepository.findByUsername(adminUsername);
 
         if (existingAdmin.isPresent()) {
-            logger.info("管理员账号 '{}' 已存在，跳过创建步骤", adminUsername);
+            User user = existingAdmin.get();
+            boolean changed = false;
+            if (user.getRole() != User.Role.SUPER_ADMIN) {
+                user.setRole(User.Role.SUPER_ADMIN);
+                changed = true;
+                logger.info("已将引导管理员账号 '{}' 升级为超级管理员", adminUsername);
+            }
+            if (user.getDisplayName() == null || user.getDisplayName().isBlank()) {
+                user.setDisplayName(adminUsername);
+                changed = true;
+            }
+            if (user.getEmail() == null && !adminEmail.isBlank()) {
+                user.setEmail(adminEmail.trim().toLowerCase(Locale.ROOT));
+                user.setEmailVerifiedAt(LocalDateTime.now());
+                changed = true;
+            }
+            if (changed) userRepository.save(user);
             return;
         }
 
@@ -51,10 +72,15 @@ public class AdminUserInitializer implements CommandLineRunner {
             logger.info("开始创建管理员账号: {}", adminUsername);
             User adminUser = new User();
             adminUser.setUsername(adminUsername);
+            adminUser.setDisplayName(adminUsername);
             adminUser.setPassword(PasswordUtil.encode(adminPassword));
-            adminUser.setRole(User.Role.ADMIN);
+            adminUser.setRole(User.Role.SUPER_ADMIN);
             adminUser.setPrimaryOrg(adminPrimaryOrg);
             adminUser.setOrgTags(adminOrgTags);
+            if (!adminEmail.isBlank()) {
+                adminUser.setEmail(adminEmail.trim().toLowerCase(Locale.ROOT));
+                adminUser.setEmailVerifiedAt(LocalDateTime.now());
+            }
 
             userRepository.save(adminUser);
             logger.info("管理员账号 '{}' 创建成功", adminUsername);
@@ -63,4 +89,4 @@ public class AdminUserInitializer implements CommandLineRunner {
             throw new RuntimeException("无法创建管理员账号", e);
         }
     }
-} 
+}

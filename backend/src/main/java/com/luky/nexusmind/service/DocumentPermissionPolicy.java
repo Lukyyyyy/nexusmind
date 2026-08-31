@@ -19,6 +19,6 @@ public final class DocumentPermissionPolicy {
     }
 
     public static boolean canAccessPrivateDocument(String ownerId, String viewerId, String role) {
-        return "ADMIN".equals(role) || (ownerId != null && ownerId.equals(viewerId));
+        return "SUPER_ADMIN".equals(role) || (ownerId != null && ownerId.equals(viewerId));
     }
 }

@@ -61,12 +61,12 @@ public class AdminController {
             LogUtils.logBusiness("ADMIN_GET_ALL_USERS", adminUsername, "成功获取用户列表，用户数量: %d", users.size());
             monitor.end("获取用户列表成功");
             
-            return ResponseEntity.ok(Map.of("code", 200, "message", "Get all users successful", "data", users));
+            return ResponseEntity.ok(Map.of("code", 200, "message", "获取用户列表成功", "data", users));
         } catch (Exception e) {
             LogUtils.logBusinessError("ADMIN_GET_ALL_USERS", adminUsername, "获取所有用户失败", e);
             monitor.end("获取用户列表失败: " + e.getMessage());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("code", 500, "message", "Failed to get users: " + e.getMessage()));
+                    .body(Map.of("code", 500, "message", "获取用户列表失败"));
         }
     }
 
@@ -198,21 +198,10 @@ public class AdminController {
     public ResponseEntity<?> createAdminUser(
             @RequestHeader("Authorization") String token,
             @RequestBody AdminUserRequest request) {
-        
         String adminUsername = jwtUtils.extractUsernameFromToken(token.replace("Bearer ", ""));
         validateAdmin(adminUsername);
-        
-        try {
-            userService.createAdminUser(request.username(), request.password(), adminUsername);
-            return ResponseEntity.ok(Map.of("code", 200, "message", "管理员用户创建成功"));
-        } catch (CustomException e) {
-            LogUtils.logBusinessError("ADMIN_CREATE_ADMIN_USER", adminUsername, "创建管理员用户失败: %s", e, e.getMessage());
-            return ResponseEntity.status(e.getStatus()).body(Map.of("code", e.getStatus().value(), "message", e.getMessage()));
-        } catch (Exception e) {
-            LogUtils.logBusinessError("ADMIN_CREATE_ADMIN_USER", adminUsername, "创建管理员用户异常: %s", e, e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("code", 500, "message", "创建管理员用户失败: " + e.getMessage()));
-        }
+        return ResponseEntity.status(HttpStatus.GONE).body(Map.of("code", 410,
+                "message", "该入口已停用，请先注册普通用户，再由超级管理员分配管理员组织"));
     }
     
     /**
@@ -274,18 +263,8 @@ public class AdminController {
         
         String adminUsername = jwtUtils.extractUsernameFromToken(token.replace("Bearer ", ""));
         validateAdmin(adminUsername);
-        
-        try {
-            userService.assignOrgTagsToUser(userId, request.orgTags(), adminUsername);
-            return ResponseEntity.ok(Map.of("code", 200, "message", "组织标签分配成功"));
-        } catch (CustomException e) {
-            LogUtils.logBusinessError("ADMIN_ASSIGN_ORG_TAGS", adminUsername, "分配组织标签失败: %s", e, e.getMessage());
-            return ResponseEntity.status(e.getStatus()).body(Map.of("code", e.getStatus().value(), "message", e.getMessage()));
-        } catch (Exception e) {
-            LogUtils.logBusinessError("ADMIN_ASSIGN_ORG_TAGS", adminUsername, "分配组织标签异常: %s", e, e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                    .body(Map.of("code", 500, "message", "分配组织标签失败: " + e.getMessage()));
-        }
+        return ResponseEntity.status(HttpStatus.GONE).body(Map.of("code", 410,
+                "message", "该入口已停用，请使用用户管理中的组织成员设置"));
     }
     
     /**
@@ -382,13 +361,17 @@ public class AdminController {
             @RequestParam(required = false) String orgTag,
             @RequestParam(required = false) Integer status,
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int size) {
-        
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) String sortField,
+            @RequestParam(required = false) String sortOrder) {
+
         String adminUsername = jwtUtils.extractUsernameFromToken(token.replace("Bearer ", ""));
         validateAdmin(adminUsername);
-        
+
         try {
-            Map<String, Object> usersData = userService.getUserList(keyword, orgTag, status, page, size);
+            User actor = validateAdmin(adminUsername);
+            Map<String, Object> usersData = userService.getUserList(keyword, orgTag, status, page, size,
+                    actor.getRole() == User.Role.SUPER_ADMIN, sortField, sortOrder);
             return ResponseEntity.ok(Map.of(
                 "code", 200, 
                 "message", "获取用户列表成功", 
@@ -460,14 +443,14 @@ public class AdminController {
      */
     private User validateAdmin(String username) {
         if (username == null || username.isEmpty()) {
-            throw new CustomException("Invalid token", HttpStatus.UNAUTHORIZED);
+            throw new CustomException("登录令牌无效", HttpStatus.UNAUTHORIZED);
         }
         
         User admin = userRepository.findByUsername(username)
-                .orElseThrow(() -> new CustomException("User not found", HttpStatus.NOT_FOUND));
+                .orElseThrow(() -> new CustomException("用户不存在", HttpStatus.NOT_FOUND));
         
-        if (admin.getRole() != User.Role.ADMIN) {
-            throw new CustomException("Unauthorized access: Admin role required", HttpStatus.FORBIDDEN);
+        if (!admin.getRole().isAdministrator()) {
+            throw new CustomException("无权访问：需要管理员权限", HttpStatus.FORBIDDEN);
         }
         
         return admin;

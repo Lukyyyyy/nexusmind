@@ -47,10 +47,13 @@ public class SecurityConfig {
                             // 允许静态资源访问
                             .requestMatchers("/", "/test.html", "/static/test.html", "/static/**", "/*.js", "/*.css", "/*.ico").permitAll()
                             // 允许 WebSocket 连接
-                            .requestMatchers("/chat/**", "/ws/**").permitAll()
+                            .requestMatchers("/chat/**", "/notifications/**", "/ws/**").permitAll()
                             // 允许登录注册接口
                             .requestMatchers(
                                     "/api/v1/users/register",
+                                    "/api/v1/users/registration-code",
+                                    "/api/v1/users/password-reset-code",
+                                    "/api/v1/users/reset-password",
                                     "/api/v1/users/login",
                                     "/api/v1/auth/refreshToken"
                             ).permitAll()
@@ -63,20 +66,20 @@ public class SecurityConfig {
                             // SSE 事件流无法稳定设置 Authorization header，控制器内部按 query token 校验
                             .requestMatchers("/api/v1/upload/status/events").permitAll()
                             // 文件上传和下载相关接口 - 普通用户和管理员都可访问
-                            .requestMatchers("/api/v1/upload/**", "/api/v1/parse", "/api/v1/documents/download", "/api/v1/documents/preview").hasAnyRole("USER", "ADMIN")
+                            .requestMatchers("/api/v1/upload/**", "/api/v1/parse", "/api/v1/documents/download", "/api/v1/documents/preview").hasAnyRole("USER", "ADMIN", "SUPER_ADMIN")
                             // 对话历史相关接口 - 用户只能查看自己的历史，管理员可以查看所有
-                            .requestMatchers("/api/v1/users/conversation/**").hasAnyRole("USER", "ADMIN")
+                            .requestMatchers("/api/v1/users/conversation/**").hasAnyRole("USER", "ADMIN", "SUPER_ADMIN")
                             // 搜索接口 - 普通用户和管理员都可访问
-                            .requestMatchers("/api/search/**").hasAnyRole("USER", "ADMIN")
+                            .requestMatchers("/api/search/**").hasAnyRole("USER", "ADMIN", "SUPER_ADMIN")
                             // 聊天相关接口 - WebSocket停止Token获取 (允许匿名访问)
                             .requestMatchers("/api/v1/chat/websocket-token").permitAll()
                             // 管理员专属接口 - 知识库管理、系统状态、用户活动监控
-                            .requestMatchers("/api/v1/admin/**").hasRole("ADMIN")
+                            .requestMatchers("/api/v1/admin/**").hasAnyRole("ADMIN", "SUPER_ADMIN")
                             // 模型配置：普通用户管理自己的模型，管理员额外管理系统模型
-                            .requestMatchers("/api/v1/model-config/**").hasAnyRole("USER", "ADMIN")
-                            .requestMatchers("/api/v1/graph-prompt-templates/**").hasAnyRole("USER", "ADMIN")
+                            .requestMatchers("/api/v1/model-config/**").hasAnyRole("USER", "ADMIN", "SUPER_ADMIN")
+                            .requestMatchers("/api/v1/graph-prompt-templates/**").hasAnyRole("USER", "ADMIN", "SUPER_ADMIN")
                             // 用户组织标签管理接口
-                            .requestMatchers("/api/v1/users/primary-org").hasAnyRole("USER", "ADMIN")
+                            .requestMatchers("/api/v1/users/primary-org").hasAnyRole("USER", "ADMIN", "SUPER_ADMIN")
                             // 其他请求需要认证
                             .anyRequest().authenticated())
                     // 未登录与无权限必须使用不同状态码，避免前端将普通 403 误判为登录失效。

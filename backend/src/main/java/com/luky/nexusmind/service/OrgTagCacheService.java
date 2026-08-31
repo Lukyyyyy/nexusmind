@@ -8,6 +8,8 @@ import org.springframework.stereotype.Service;
 
 import com.luky.nexusmind.model.OrganizationTag;
 import com.luky.nexusmind.repository.OrganizationTagRepository;
+import com.luky.nexusmind.repository.OrganizationMembershipRepository;
+import com.luky.nexusmind.repository.UserRepository;
 
 import java.util.List;
 import java.util.Set;
@@ -39,6 +41,12 @@ public class OrgTagCacheService {
     
     @Autowired
     private OrganizationTagRepository organizationTagRepository;
+
+    @Autowired
+    private OrganizationMembershipRepository membershipRepository;
+
+    @Autowired
+    private UserRepository userRepository;
     
     /**
      * 缓存用户的组织标签
@@ -80,7 +88,9 @@ public class OrgTagCacheService {
         } catch (Exception e) {
             logger.error("Failed to get organization tags for user: {}", username, e);
         }
-        return null;
+        return userRepository.findByUsername(username)
+                .map(user -> membershipRepository.findTagIdsByUserId(user.getId()))
+                .orElse(List.of());
     }
     
     /**

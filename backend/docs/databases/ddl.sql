@@ -1,12 +1,14 @@
 CREATE TABLE users (
                        id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '用户唯一标识',
                        username VARCHAR(255) NOT NULL UNIQUE COMMENT '用户名，唯一',
+                       display_name VARCHAR(32) NOT NULL COMMENT '昵称，用于展示',
                        password VARCHAR(255) NOT NULL COMMENT '加密后的密码',
                        role ENUM('USER', 'ADMIN') NOT NULL DEFAULT 'USER' COMMENT '用户角色',
                        org_tags VARCHAR(255) DEFAULT NULL COMMENT '用户所属组织标签，多个用逗号分隔',
                        primary_org VARCHAR(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin DEFAULT NULL COMMENT '用户主组织标签',
                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                       last_login_at TIMESTAMP DEFAULT NULL COMMENT '最后登录时间',
                        INDEX idx_username (username) COMMENT '用户名索引'
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户表';
 CREATE TABLE organization_tags (

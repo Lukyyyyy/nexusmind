@@ -1,7 +1,10 @@
 package com.luky.nexusmind.config;
 
 import com.luky.nexusmind.model.FileUpload;
+import com.luky.nexusmind.model.User;
 import com.luky.nexusmind.repository.FileUploadRepository;
+import com.luky.nexusmind.repository.UserRepository;
+import com.luky.nexusmind.service.AuditService;
 import com.luky.nexusmind.service.DocumentPermissionPolicy;
 import com.luky.nexusmind.utils.JwtUtils;
 import jakarta.servlet.FilterChain;
@@ -49,6 +52,12 @@ public class OrgTagAuthorizationFilter extends OncePerRequestFilter {
     
     @Autowired
     private FileUploadRepository fileUploadRepository;
+
+    @Autowired
+    private UserRepository userRepository;
+
+    @Autowired
+    private AuditService auditService;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
@@ -165,7 +174,14 @@ public class OrgTagAuthorizationFilter extends OncePerRequestFilter {
                 String role = jwtUtils.extractRoleFromToken(token);
                 boolean owner = resourceInfo.getOwner().equals(username)
                         || resourceInfo.getOwner().equals(authenticatedUserId);
-                if (owner || "ADMIN".equals(role)) {
+                if (owner || "SUPER_ADMIN".equals(role)) {
+                    if (!owner) {
+                        User actor = userRepository.findByUsername(username).orElse(null);
+                        Long targetUserId = userRepository.findByUsername(resourceInfo.getOwner())
+                                .map(User::getId).orElseGet(() -> parseLong(resourceInfo.getOwner()));
+                        auditService.record(actor, "PRIVATE_DOCUMENT_ACCESSED", targetUserId,
+                                resourceOrgTag, "resource:" + resourceId, request.getRemoteAddr());
+                    }
                     filterChain.doFilter(request, response);
                 } else {
                     logger.debug("私人资源，且用户不是拥有者或管理员，拒绝访问");
@@ -204,7 +220,7 @@ public class OrgTagAuthorizationFilter extends OncePerRequestFilter {
             }
             
             // 如果是管理员，直接放行
-            if ("ADMIN".equals(role)) {
+            if ("ADMIN".equals(role) || "SUPER_ADMIN".equals(role)) {
                 logger.debug("用户是管理员，放行请求");
                 filterChain.doFilter(request, response);
                 return;
@@ -355,6 +371,14 @@ public class OrgTagAuthorizationFilter extends OncePerRequestFilter {
         return DEFAULT_ORG_TAG.equalsIgnoreCase(orgTag)
                 || LEGACY_DEFAULT_ORG_TAG.equals(orgTag)
                 || DEFAULT_ORG_NAME.equals(orgTag);
+    }
+
+    private Long parseLong(String value) {
+        try {
+            return Long.valueOf(value);
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
     
     /**

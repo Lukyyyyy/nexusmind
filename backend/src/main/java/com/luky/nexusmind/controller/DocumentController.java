@@ -100,7 +100,7 @@ public class DocumentController {
             FileUpload file = fileOpt.get();
             
             // 权限检查：只有文件所有者或管理员可以删除
-            if (!file.getUserId().equals(userId) && !"ADMIN".equals(role)) {
+            if (!file.getUserId().equals(userId) && !"SUPER_ADMIN".equals(role)) {
                 LogUtils.logUserOperation(userId, "DELETE_DOCUMENT", fileMd5, "FAILED_PERMISSION_DENIED");
                 LogUtils.logBusiness("DELETE_DOCUMENT", userId, "用户无权删除文档: fileMd5=%s, fileOwner=%s", fileMd5, file.getUserId());
                 monitor.end("删除失败：权限不足");
@@ -640,7 +640,7 @@ public class DocumentController {
             monitor.end("PDF预览失败: " + e.getMessage());
             Map<String, Object> response = new HashMap<>();
             response.put("code", HttpStatus.INTERNAL_SERVER_ERROR.value());
-            response.put("message", "PDF预览失败: " + e.getMessage());
+            response.put("message", "PDF 预览失败");
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
         }
     }

@@ -1,0 +1,2 @@
+ALTER TABLE email_deliveries
+    ADD COLUMN template_kind VARCHAR(16) NOT NULL DEFAULT 'NOTIFICATION' AFTER body;

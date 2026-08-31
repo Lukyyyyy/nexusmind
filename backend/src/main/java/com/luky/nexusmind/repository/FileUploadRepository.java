@@ -19,6 +19,7 @@ public interface FileUploadRepository extends JpaRepository<FileUpload, Long> {
     Optional<FileUpload> findByFileNameAndIsPublicTrue(String fileName);
     
     long countByFileMd5(String fileMd5);
+    long countByOrgTag(String orgTag);
     
     void deleteByFileMd5(String fileMd5);
     

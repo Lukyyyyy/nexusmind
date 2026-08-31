@@ -18,6 +18,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.time.LocalDateTime;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -29,6 +30,7 @@ class UserServiceTest {
     private InMemoryUserRepository users;
     private InMemoryOrganizationTagRepository organizationTags;
     private RecordingOrgTagCacheService cache;
+    private RecordingEmailVerificationService emailVerificationService;
 
     /**
      * 在每个测试方法执行前初始化测试替身
@@ -38,11 +40,13 @@ class UserServiceTest {
         users = new InMemoryUserRepository();
         organizationTags = new InMemoryOrganizationTagRepository();
         cache = new RecordingOrgTagCacheService();
+        emailVerificationService = new RecordingEmailVerificationService();
 
         userService = new UserService();
         ReflectionTestUtils.setField(userService, "userRepository", users.proxy());
         ReflectionTestUtils.setField(userService, "organizationTagRepository", organizationTags.proxy());
         ReflectionTestUtils.setField(userService, "orgTagCacheService", cache);
+        ReflectionTestUtils.setField(userService, "emailVerificationService", emailVerificationService);
     }
 
     /**
@@ -52,16 +56,17 @@ class UserServiceTest {
     void testRegisterUser_Success() {
         organizationTags.save(existingTag("default", "默认组织"));
 
-        userService.registerUser("testuser", "password123");
+        userService.registerUser("testuser", "张三", "password123");
 
         User savedUser = users.findByUsername("testuser").orElseThrow();
         assertNotNull(savedUser);
         assertEquals("testuser", savedUser.getUsername());
+        assertEquals("张三", savedUser.getDisplayName());
         assertEquals("default,PRIVATE_testuser", savedUser.getOrgTags());
         assertEquals("PRIVATE_testuser", savedUser.getPrimaryOrg());
 
         OrganizationTag privateTag = organizationTags.findByTagId("PRIVATE_testuser").orElseThrow();
-        assertEquals("testuser的私人空间", privateTag.getName());
+        assertEquals("张三的私人空间", privateTag.getName());
         assertSame(savedUser, privateTag.getCreatedBy());
 
         assertEquals(List.of("default", "PRIVATE_testuser"), cache.cachedOrgTags.get("testuser"));
@@ -81,8 +86,20 @@ class UserServiceTest {
                 CustomException.class,
                 () -> userService.registerUser("testuser", "password123")
         );
-        assertEquals("Username already exists", exception.getMessage());
+        assertEquals("用户名已存在", exception.getMessage());
         assertEquals(HttpStatus.BAD_REQUEST, exception.getStatus());
+    }
+
+    @Test
+    void registeredEmailGetsGeneratedIdAndNickname() {
+        organizationTags.save(existingTag("default", "默认组织"));
+        User user = userService.registerVerifiedUser("HELLO@example.com", "123456", "password.123");
+
+        assertTrue(user.getUsername().matches("zs_[a-z0-9]{10}"));
+        assertEquals("用户_" + user.getUsername().substring(7), user.getDisplayName());
+        assertEquals("hello@example.com", user.getEmail());
+        assertNotNull(user.getEmailVerifiedAt());
+        assertEquals("hello@example.com", emailVerificationService.consumedEmail);
     }
 
     /**
@@ -95,10 +112,12 @@ class UserServiceTest {
 
         User user = new User();
         user.setUsername("testuser");
+        user.setEmail("test@example.com");
+        user.setEmailVerifiedAt(LocalDateTime.now());
         user.setPassword(encodedPassword);
         users.save(user);
 
-        String username = userService.authenticateUser("testuser", rawPassword);
+        String username = userService.authenticateUser("TEST@example.com", rawPassword);
 
         assertEquals("testuser", username);
     }
@@ -112,8 +131,42 @@ class UserServiceTest {
                 CustomException.class,
                 () -> userService.authenticateUser("testuser", "wrongpassword")
         );
-        assertEquals("Invalid username or password", exception.getMessage());
+        assertEquals("邮箱或密码错误", exception.getMessage());
         assertEquals(HttpStatus.UNAUTHORIZED, exception.getStatus());
+    }
+
+    @Test
+    void resetPasswordConsumesCodeAndChangesPassword() {
+        User user = new User();
+        user.setUsername("testuser");
+        user.setEmail("test@example.com");
+        user.setPassword(PasswordUtil.encode("oldpassword"));
+        users.save(user);
+
+        Long userId = userService.resetPassword("TEST@example.com", "123456", "newpassword");
+
+        assertEquals(user.getId(), userId);
+        assertTrue(PasswordUtil.matches("newpassword", user.getPassword()));
+        assertEquals("test@example.com", emailVerificationService.resetEmail);
+    }
+
+    @Test
+    void testRegisterUser_PasswordTooShort() {
+        CustomException exception = assertThrows(
+                CustomException.class,
+                () -> userService.registerUser("testuser", "abc1234")
+        );
+        assertEquals("密码需为8-72个字符，不能包含控制字符", exception.getMessage());
+        assertEquals(HttpStatus.BAD_REQUEST, exception.getStatus());
+    }
+
+    @Test
+    void testRegisterUser_RejectsInvalidDisplayName() {
+        CustomException exception = assertThrows(
+                CustomException.class,
+                () -> userService.registerUser("testuser", "\n", "password123")
+        );
+        assertEquals("昵称需为1-32个字符，不能包含控制字符", exception.getMessage());
     }
 
     @Test
@@ -201,6 +254,40 @@ class UserServiceTest {
         }
     }
 
+    private static class RecordingEmailVerificationService extends EmailVerificationService {
+        private String consumedEmail;
+        private String resetEmail;
+
+        RecordingEmailVerificationService() {
+            super(null, null, null);
+        }
+
+        @Override
+        public String normalize(String email) {
+            return email.trim().toLowerCase();
+        }
+
+        @Override
+        public Long verifyRegistrationCode(String email, String code) {
+            return 7L;
+        }
+
+        @Override
+        public void consumeRegistrationCode(Long tokenId, String email) {
+            consumedEmail = email;
+        }
+
+        @Override
+        public Long verifyPasswordResetCode(User user, String email, String code) {
+            return 8L;
+        }
+
+        @Override
+        public void consumePasswordResetCode(Long tokenId, User user, String email) {
+            resetEmail = email;
+        }
+    }
+
     private static class InMemoryUserRepository {
         private final Map<String, User> byUsername = new HashMap<>();
         private long nextId = 1L;
@@ -208,6 +295,8 @@ class UserServiceTest {
         UserRepository proxy() {
             return UserServiceTest.proxy(UserRepository.class, (proxy, method, args) -> switch (method.getName()) {
                 case "findByUsername" -> findByUsername((String) args[0]);
+                case "findByEmail" -> findByEmail((String) args[0], false);
+                case "findByEmailAndEmailVerifiedAtIsNotNull" -> findByEmail((String) args[0], true);
                 case "findById" -> byUsername.values().stream()
                         .filter(user -> user.getId().equals(args[0])).findFirst();
                 case "findAll" -> new ArrayList<>(byUsername.values());
@@ -218,6 +307,13 @@ class UserServiceTest {
 
         Optional<User> findByUsername(String username) {
             return Optional.ofNullable(byUsername.get(username));
+        }
+
+        Optional<User> findByEmail(String email, boolean verifiedOnly) {
+            return byUsername.values().stream()
+                    .filter(user -> email.equals(user.getEmail()))
+                    .filter(user -> !verifiedOnly || user.getEmailVerifiedAt() != null)
+                    .findFirst();
         }
 
         User save(User user) {

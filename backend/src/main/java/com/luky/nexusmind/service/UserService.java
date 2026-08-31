@@ -2,9 +2,13 @@ package com.luky.nexusmind.service;
 
 import com.luky.nexusmind.exception.CustomException;
 import com.luky.nexusmind.model.OrganizationTag;
+import com.luky.nexusmind.model.OrganizationMembership;
 import com.luky.nexusmind.model.User;
 import com.luky.nexusmind.repository.OrganizationTagRepository;
 import com.luky.nexusmind.repository.UserRepository;
+import com.luky.nexusmind.repository.FileUploadRepository;
+import com.luky.nexusmind.repository.OrganizationMembershipRepository;
+import com.luky.nexusmind.repository.OrganizationJoinRequestRepository;
 import com.luky.nexusmind.utils.PasswordUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,8 +22,11 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.security.SecureRandom;
+import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -28,6 +35,7 @@ import java.util.stream.Collectors;
 import java.util.HashMap;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.Objects;
 
 /**
  * UserService 类用于处理用户注册和认证相关的业务逻辑。
@@ -44,6 +52,11 @@ public class UserService {
     private static final String PRIVATE_TAG_PREFIX = "PRIVATE_";
     private static final String PRIVATE_ORG_NAME_SUFFIX = "的私人空间";
     private static final String PRIVATE_ORG_DESCRIPTION = "用户的私人组织标签，仅用户本人可访问";
+    private static final String USERNAME_PATTERN = "[A-Za-z0-9_-]{4,32}";
+    private static final String USERNAME_INVALID_MESSAGE = "用户名需为4-32位英文字母、数字、下划线或短横线";
+    private static final String PASSWORD_INVALID_MESSAGE = "密码需为8-72个字符，不能包含控制字符";
+    private static final String ID_CHARS = "abcdefghijklmnopqrstuvwxyz0123456789";
+    private static final SecureRandom RANDOM = new SecureRandom();
 
     @Autowired
     private UserRepository userRepository;
@@ -54,6 +67,38 @@ public class UserService {
     @Autowired
     private OrgTagCacheService orgTagCacheService;
 
+    @Autowired
+    private OrganizationMembershipService organizationMembershipService;
+
+    @Autowired
+    private OrganizationMembershipRepository organizationMembershipRepository;
+
+    @Autowired
+    private OrganizationJoinRequestRepository organizationJoinRequestRepository;
+
+    @Autowired
+    private FileUploadRepository fileUploadRepository;
+
+    @Autowired
+    private EmailVerificationService emailVerificationService;
+
+    @Transactional
+    public User registerVerifiedUser(String rawEmail, String code, String password) {
+        String email = emailVerificationService.normalize(rawEmail);
+        validatePassword(password);
+        if (userRepository.findByEmail(email).isPresent()) {
+            throw new CustomException("该邮箱已注册", HttpStatus.CONFLICT);
+        }
+        Long tokenId = emailVerificationService.verifyRegistrationCode(email, code);
+        String username = generateUsername();
+        registerUser(username, "用户_" + username.substring(username.length() - 6), password);
+        User user = userRepository.findByUsername(username).orElseThrow();
+        user.setEmail(email);
+        user.setEmailVerifiedAt(LocalDateTime.now());
+        emailVerificationService.consumeRegistrationCode(tokenId, email);
+        return userRepository.save(user);
+    }
+
     /**
      * 注册新用户。
      *
@@ -63,10 +108,18 @@ public class UserService {
      */
     @Transactional
     public void registerUser(String username, String password) {
+        registerUser(username, username, password);
+    }
+
+    @Transactional
+    public void registerUser(String username, String displayName, String password) {
+        validateUsername(username);
+        String normalizedDisplayName = validateDisplayName(displayName == null ? username : displayName);
+        validatePassword(password);
         // 检查数据库中是否已存在该用户名
         if (userRepository.findByUsername(username).isPresent()) {
             // 若用户名已存在，抛出自定义异常，状态码为 400 Bad Request
-            throw new CustomException("Username already exists", HttpStatus.BAD_REQUEST);
+            throw new CustomException("用户名已存在", HttpStatus.BAD_REQUEST);
         }
         
         // 确保默认组织标签存在（系统内部使用）
@@ -74,6 +127,7 @@ public class UserService {
         
         User user = new User();
         user.setUsername(username);
+        user.setDisplayName(normalizedDisplayName);
         // 对密码进行加密处理并设置到 User 对象中
         user.setPassword(PasswordUtil.encode(password));
         // 设置用户角色为普通用户
@@ -81,10 +135,10 @@ public class UserService {
         
         // 保存用户以生成ID
         userRepository.save(user);
-        
+
         // 创建用户的私人组织标签
         String privateTagId = PRIVATE_TAG_PREFIX + username;
-        createPrivateOrgTag(privateTagId, username, user);
+        createPrivateOrgTag(privateTagId, normalizedDisplayName, user);
         
         List<String> assignedOrgTags = List.of(DEFAULT_ORG_TAG, privateTagId);
         user.setOrgTags(String.join(",", assignedOrgTags));
@@ -93,6 +147,13 @@ public class UserService {
         user.setPrimaryOrg(privateTagId);
         
         userRepository.save(user);
+
+        if (organizationMembershipService != null) {
+            organizationTagRepository.findByTagId(DEFAULT_ORG_TAG)
+                    .ifPresent(tag -> organizationMembershipService.add(user, tag, OrganizationMembership.Source.SYSTEM));
+            organizationTagRepository.findByTagId(privateTagId)
+                    .ifPresent(tag -> organizationMembershipService.add(user, tag, OrganizationMembership.Source.SYSTEM));
+        }
         
         // 缓存组织标签信息
         orgTagCacheService.cacheUserOrgTags(username, assignedOrgTags);
@@ -104,20 +165,21 @@ public class UserService {
     /**
      * 创建用户的私人组织标签
      */
-    private void createPrivateOrgTag(String privateTagId, String username, User owner) {
+    private void createPrivateOrgTag(String privateTagId, String displayName, User owner) {
         // 检查私人标签是否已存在
         if (!organizationTagRepository.existsByTagId(privateTagId)) {
-            logger.info("Creating private organization tag for user: {}", username);
+            logger.info("Creating private organization tag for user: {}", owner.getUsername());
             
             // 创建私人组织标签
             OrganizationTag privateTag = new OrganizationTag();
             privateTag.setTagId(privateTagId);
-            privateTag.setName(username + PRIVATE_ORG_NAME_SUFFIX);
+            privateTag.setName(displayName + PRIVATE_ORG_NAME_SUFFIX);
             privateTag.setDescription(PRIVATE_ORG_DESCRIPTION);
+            privateTag.setJoinable(false);
             privateTag.setCreatedBy(owner);
             
             organizationTagRepository.save(privateTag);
-            logger.info("Private organization tag created successfully for user: {}", username);
+            logger.info("Private organization tag created successfully for user: {}", owner.getUsername());
         }
     }
 
@@ -130,7 +192,7 @@ public class UserService {
             
             // 寻找一个管理员用户作为创建者
             Optional<User> adminUser = userRepository.findAll().stream()
-                    .filter(user -> User.Role.ADMIN.equals(user.getRole()))
+                    .filter(user -> user.getRole() != null && user.getRole().isAdministrator())
                     .findFirst();
             
             User creator;
@@ -146,6 +208,7 @@ public class UserService {
             defaultTag.setTagId(DEFAULT_ORG_TAG);
             defaultTag.setName(DEFAULT_ORG_NAME);
             defaultTag.setDescription(DEFAULT_ORG_DESCRIPTION);
+            defaultTag.setJoinable(false);
             defaultTag.setCreatedBy(creator);
             
             organizationTagRepository.save(defaultTag);
@@ -169,7 +232,7 @@ public class UserService {
                     systemAdmin.setPassword(PasswordUtil.encode(randomPassword));
                     systemAdmin.setRole(User.Role.ADMIN);
                     
-                    logger.info("System admin created with password: {}", randomPassword);
+                    logger.info("System admin created");
                     return userRepository.save(systemAdmin);
                 });
     }
@@ -197,17 +260,18 @@ public class UserService {
      * @throws CustomException 如果用户名已存在或创建者不是管理员，则抛出异常
      */
     public void createAdminUser(String username, String password, String creatorUsername) {
+        validatePassword(password);
         // 验证创建者是否为管理员
         User creator = userRepository.findByUsername(creatorUsername)
-                .orElseThrow(() -> new CustomException("Creator not found", HttpStatus.NOT_FOUND));
+                .orElseThrow(() -> new CustomException("创建者不存在", HttpStatus.NOT_FOUND));
         
-        if (creator.getRole() != User.Role.ADMIN) {
-            throw new CustomException("Only administrators can create admin accounts", HttpStatus.FORBIDDEN);
+        if (creator.getRole() != User.Role.SUPER_ADMIN) {
+            throw new CustomException("仅超级管理员可创建管理员账号", HttpStatus.FORBIDDEN);
         }
         
         // 检查数据库中是否已存在该用户名
         if (userRepository.findByUsername(username).isPresent()) {
-            throw new CustomException("Username already exists", HttpStatus.BAD_REQUEST);
+            throw new CustomException("用户名已存在", HttpStatus.BAD_REQUEST);
         }
         
         User adminUser = new User();
@@ -225,17 +289,80 @@ public class UserService {
      * @return 认证成功后返回用户的用户名
      * @throws CustomException 如果用户名或密码无效，则抛出异常
      */
-    public String authenticateUser(String username, String password) {
-        User user = userRepository.findByUsername(username)
-                .orElseThrow(() -> new CustomException("Invalid username or password", HttpStatus.UNAUTHORIZED));
+    public String authenticateUser(String rawEmail, String password) {
+        String email = rawEmail == null ? "" : rawEmail.trim().toLowerCase(java.util.Locale.ROOT);
+        User user = userRepository.findByEmailAndEmailVerifiedAtIsNotNull(email)
+                .orElseThrow(() -> new CustomException("邮箱或密码错误", HttpStatus.UNAUTHORIZED));
         // 比较输入的密码和数据库中存储的加密密码是否匹配
         if (!PasswordUtil.matches(password, user.getPassword())) {
             // 若不匹配，抛出自定义异常，状态码为 401 Unauthorized
-            throw new CustomException("Invalid username or password", HttpStatus.UNAUTHORIZED);
+            throw new CustomException("邮箱或密码错误", HttpStatus.UNAUTHORIZED);
         }
         ensureDefaultOrgAssigned(user);
+        // 认证成功，记录最后登录时间
+        user.setLastLoginAt(LocalDateTime.now());
+        userRepository.save(user);
         // 认证成功，返回用户的用户名
         return user.getUsername();
+    }
+
+    private void validatePassword(String password) {
+        if (password == null || password.codePointCount(0, password.length()) < 8
+                || password.codePointCount(0, password.length()) > 72
+                || password.codePoints().anyMatch(Character::isISOControl)) {
+            throw new CustomException(PASSWORD_INVALID_MESSAGE, HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @Transactional
+    public Long resetPassword(String rawEmail, String code, String password) {
+        String email = emailVerificationService.normalize(rawEmail);
+        validatePassword(password);
+        User user = userRepository.findByEmail(email)
+                .orElseThrow(() -> new CustomException("验证码错误或已过期", HttpStatus.BAD_REQUEST));
+        Long tokenId = emailVerificationService.verifyPasswordResetCode(user, email, code);
+        user.setPassword(PasswordUtil.encode(password));
+        emailVerificationService.consumePasswordResetCode(tokenId, user, email);
+        userRepository.save(user);
+        return user.getId();
+    }
+
+    private String generateUsername() {
+        String username;
+        do {
+            StringBuilder value = new StringBuilder("zs_");
+            for (int i = 0; i < 10; i++) value.append(ID_CHARS.charAt(RANDOM.nextInt(ID_CHARS.length())));
+            username = value.toString();
+        } while (userRepository.findByUsername(username).isPresent());
+        return username;
+    }
+
+    @Transactional
+    public String updateDisplayName(String username, String displayName) {
+        String value = validateDisplayName(displayName);
+        User user = userRepository.findByUsername(username)
+                .orElseThrow(() -> new CustomException("用户不存在", HttpStatus.NOT_FOUND));
+        user.setDisplayName(value);
+        userRepository.save(user);
+        organizationTagRepository.findByTagId(PRIVATE_TAG_PREFIX + username).ifPresent(tag -> {
+            tag.setName(value + PRIVATE_ORG_NAME_SUFFIX);
+            organizationTagRepository.save(tag);
+        });
+        return value;
+    }
+
+    private void validateUsername(String username) {
+        if (username == null || !username.matches(USERNAME_PATTERN)) {
+            throw new CustomException(USERNAME_INVALID_MESSAGE, HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    private String validateDisplayName(String displayName) {
+        String value = displayName == null ? "" : displayName.trim();
+        if (value.isEmpty() || value.codePointCount(0, value.length()) > 32 || value.codePoints().anyMatch(Character::isISOControl)) {
+            throw new CustomException("昵称需为1-32个字符，不能包含控制字符", HttpStatus.BAD_REQUEST);
+        }
+        return value;
     }
     
     /**
@@ -252,26 +379,29 @@ public class UserService {
                                                 String parentTag, String creatorUsername) {
         // 验证创建者是否为管理员
         User creator = userRepository.findByUsername(creatorUsername)
-                .orElseThrow(() -> new CustomException("Creator not found", HttpStatus.NOT_FOUND));
+                .orElseThrow(() -> new CustomException("创建者不存在", HttpStatus.NOT_FOUND));
         
-        if (creator.getRole() != User.Role.ADMIN) {
-            throw new CustomException("Only administrators can create organization tags", HttpStatus.FORBIDDEN);
+        if (!creator.getRole().isAdministrator()) {
+            throw new CustomException("仅管理员可创建组织标签", HttpStatus.FORBIDDEN);
         }
         
         // 检查标签ID是否已存在
         if (organizationTagRepository.existsByTagId(tagId)) {
-            throw new CustomException("Tag ID already exists", HttpStatus.BAD_REQUEST);
+            throw new CustomException("组织标签 ID 已存在", HttpStatus.BAD_REQUEST);
         }
         
         // 如果指定了父标签，检查父标签是否存在
         if (parentTag != null && !parentTag.isEmpty()) {
             organizationTagRepository.findByTagId(parentTag)
-                    .orElseThrow(() -> new CustomException("Parent tag not found", HttpStatus.NOT_FOUND));
+                    .orElseThrow(() -> new CustomException("父组织标签不存在", HttpStatus.NOT_FOUND));
+        }
+        if (organizationTagRepository.existsByNameAndParentTag(name.trim(), emptyToNull(parentTag))) {
+            throw new CustomException("同一父组织下名称不能重复", HttpStatus.CONFLICT);
         }
         
         OrganizationTag tag = new OrganizationTag();
         tag.setTagId(tagId);
-        tag.setName(name);
+        tag.setName(name.trim());
         tag.setDescription(description);
         tag.setParentTag(parentTag);
         tag.setCreatedBy(creator);
@@ -295,20 +425,20 @@ public class UserService {
     public void assignOrgTagsToUser(Long userId, List<String> orgTags, String adminUsername) {
         // 验证操作者是否为管理员
         User admin = userRepository.findByUsername(adminUsername)
-                .orElseThrow(() -> new CustomException("Admin not found", HttpStatus.NOT_FOUND));
+                .orElseThrow(() -> new CustomException("管理员不存在", HttpStatus.NOT_FOUND));
         
-        if (admin.getRole() != User.Role.ADMIN) {
-            throw new CustomException("Only administrators can assign organization tags", HttpStatus.FORBIDDEN);
+        if (!admin.getRole().isAdministrator()) {
+            throw new CustomException("仅管理员可分配组织标签", HttpStatus.FORBIDDEN);
         }
         
         // 查找用户
         User user = userRepository.findById(userId)
-                .orElseThrow(() -> new CustomException("User not found", HttpStatus.NOT_FOUND));
+                .orElseThrow(() -> new CustomException("用户不存在", HttpStatus.NOT_FOUND));
         
         // 验证所有标签是否存在
         for (String tagId : orgTags) {
             if (!organizationTagRepository.existsByTagId(tagId)) {
-                throw new CustomException("Organization tag " + tagId + " not found", HttpStatus.NOT_FOUND);
+                throw new CustomException("组织标签不存在：" + tagId, HttpStatus.NOT_FOUND);
             }
         }
         
@@ -362,21 +492,16 @@ public class UserService {
      */
     public Map<String, Object> getUserOrgTags(String username) {
         User user = userRepository.findByUsername(username)
-                .orElseThrow(() -> new CustomException("User not found", HttpStatus.NOT_FOUND));
+                .orElseThrow(() -> new CustomException("用户不存在", HttpStatus.NOT_FOUND));
         ensureDefaultOrgAssigned(user);
         
-        // 尝试从缓存获取
-        List<String> orgTags = orgTagCacheService.getUserOrgTags(username);
+        List<String> orgTags = organizationMembershipService == null
+                ? Optional.ofNullable(orgTagCacheService.getUserOrgTags(username)).orElseGet(() -> parseOrgTags(user.getOrgTags()))
+                    .stream().map(this::normalizeOrgTag).distinct().toList()
+                : organizationMembershipService.direct(user).stream()
+                    .map(value -> value.getOrganization().getTagId()).distinct().toList();
         String primaryOrg = orgTagCacheService.getUserPrimaryOrg(username);
-        
-        // 如果缓存中没有，则从数据库获取
-        if (orgTags == null || orgTags.isEmpty()) {
-            orgTags = parseOrgTags(user.getOrgTags());
-            // 更新缓存
-            orgTagCacheService.cacheUserOrgTags(username, orgTags);
-        } else {
-            orgTags = normalizeOrgTags(orgTags);
-        }
+        orgTagCacheService.cacheUserOrgTags(username, orgTags);
         
         if (primaryOrg == null || primaryOrg.isEmpty()) {
             primaryOrg = user.getPrimaryOrg();
@@ -476,13 +601,15 @@ public class UserService {
      */
     public void setUserPrimaryOrg(String username, String primaryOrg) {
         User user = userRepository.findByUsername(username)
-                .orElseThrow(() -> new CustomException("User not found", HttpStatus.NOT_FOUND));
+                .orElseThrow(() -> new CustomException("用户不存在", HttpStatus.NOT_FOUND));
         String normalizedPrimaryOrg = normalizeNullableOrgTag(primaryOrg);
         
         // 检查该组织标签是否已分配给用户
-        Set<String> userTags = new HashSet<>(parseOrgTags(user.getOrgTags()));
-        if (!userTags.contains(normalizedPrimaryOrg)) {
-            throw new CustomException("Organization tag not assigned to user", HttpStatus.BAD_REQUEST);
+        OrganizationTag selected = organizationTagRepository.findByTagId(normalizedPrimaryOrg)
+                .orElseThrow(() -> new CustomException("组织标签不存在", HttpStatus.NOT_FOUND));
+        if (DEFAULT_ORG_TAG.equals(normalizedPrimaryOrg) || selected.getArchivedAt() != null
+                || !organizationMembershipService.directMember(user, normalizedPrimaryOrg)) {
+            throw new CustomException("该用户未分配此组织标签", HttpStatus.BAD_REQUEST);
         }
         
         user.setPrimaryOrg(normalizedPrimaryOrg);
@@ -504,11 +631,11 @@ public class UserService {
         try {
             Long userIdLong = Long.parseLong(userId);
             user = userRepository.findById(userIdLong)
-                .orElseThrow(() -> new CustomException("User not found with ID: " + userId, HttpStatus.NOT_FOUND));
+                .orElseThrow(() -> new CustomException("用户不存在，ID：" + userId, HttpStatus.NOT_FOUND));
         } catch (NumberFormatException e) {
             // 如果userId不是数字格式，则假设它就是username
             user = userRepository.findByUsername(userId)
-                .orElseThrow(() -> new CustomException("User not found: " + userId, HttpStatus.NOT_FOUND));
+                .orElseThrow(() -> new CustomException("用户不存在：" + userId, HttpStatus.NOT_FOUND));
         }
         
         String username = user.getUsername();
@@ -553,7 +680,9 @@ public class UserService {
      */
     public List<Map<String, Object>> getOrganizationTagTree() {
         // 获取所有根节点（parentTag为null的标签）
-        List<OrganizationTag> rootTags = organizationTagRepository.findByParentTag(null);
+        List<OrganizationTag> rootTags = organizationTagRepository.findByParentTag(null).stream()
+                .filter(tag -> !tag.getTagId().startsWith(PRIVATE_TAG_PREFIX))
+                .toList();
         
         // 递归构建标签树
         return buildTagTreeRecursive(rootTags);
@@ -574,6 +703,9 @@ public class UserService {
             node.put("name", tag.getName());
             node.put("description", tag.getDescription());
             node.put("parentTag", tag.getParentTag()); // 添加父标签字段
+            node.put("joinable", tag.isJoinable());
+            node.put("archivedAt", tag.getArchivedAt());
+            node.put("archiveReason", tag.getArchiveReason());
             
             // 获取子标签
             List<OrganizationTag> children = organizationTagRepository.findByParentTag(tag.getTagId());
@@ -603,43 +735,57 @@ public class UserService {
                                                 String parentTag, String adminUsername) {
         // 验证操作者是否为管理员
         User admin = userRepository.findByUsername(adminUsername)
-                .orElseThrow(() -> new CustomException("Admin not found", HttpStatus.NOT_FOUND));
+                .orElseThrow(() -> new CustomException("管理员不存在", HttpStatus.NOT_FOUND));
         
-        if (admin.getRole() != User.Role.ADMIN) {
-            throw new CustomException("Only administrators can update organization tags", HttpStatus.FORBIDDEN);
+        if (!admin.getRole().isAdministrator()) {
+            throw new CustomException("仅管理员可更新组织标签", HttpStatus.FORBIDDEN);
         }
         
         // 获取要更新的标签
         OrganizationTag tag = organizationTagRepository.findByTagId(tagId)
-                .orElseThrow(() -> new CustomException("Organization tag not found", HttpStatus.NOT_FOUND));
+                .orElseThrow(() -> new CustomException("组织标签不存在", HttpStatus.NOT_FOUND));
+        if (DEFAULT_ORG_TAG.equals(tagId) || "admin".equals(tagId) || tagId.startsWith(PRIVATE_TAG_PREFIX)) {
+            throw new CustomException("系统组织不可编辑", HttpStatus.FORBIDDEN);
+        }
+        String normalizedParent = emptyToNull(parentTag);
+        if (!Objects.equals(tag.getParentTag(), normalizedParent)
+                && (organizationMembershipRepository.countByOrganizationTagId(tagId) > 0
+                || organizationJoinRequestRepository.existsByOrganizationTagId(tagId)
+                || fileUploadRepository.countByOrgTag(tagId) > 0)) {
+            throw new CustomException("已有业务数据的组织不能调整父级", HttpStatus.CONFLICT);
+        }
+        if (name != null && !name.isBlank() && !name.trim().equals(tag.getName())
+                && organizationTagRepository.existsByNameAndParentTag(name.trim(), normalizedParent)) {
+            throw new CustomException("同一父组织下名称不能重复", HttpStatus.CONFLICT);
+        }
         
         // 如果指定了父标签，检查父标签是否存在
         if (parentTag != null && !parentTag.isEmpty()) {
             // 检查是否为自身
             if (tagId.equals(parentTag)) {
-                throw new CustomException("A tag cannot be its own parent", HttpStatus.BAD_REQUEST);
+                throw new CustomException("组织标签不能以自身作为父级", HttpStatus.BAD_REQUEST);
             }
             
             // 检查是否存在
             organizationTagRepository.findByTagId(parentTag)
-                    .orElseThrow(() -> new CustomException("Parent tag not found", HttpStatus.NOT_FOUND));
+                    .orElseThrow(() -> new CustomException("父组织标签不存在", HttpStatus.NOT_FOUND));
             
             // 检查是否会形成循环
             if (wouldFormCycle(tagId, parentTag)) {
-                throw new CustomException("Setting this parent would create a cycle in the tag hierarchy", HttpStatus.BAD_REQUEST);
+                throw new CustomException("设置该父级会导致组织标签层级循环", HttpStatus.BAD_REQUEST);
             }
         }
         
         // 更新标签
         if (name != null && !name.isEmpty()) {
-            tag.setName(name);
+            tag.setName(name.trim());
         }
         
         if (description != null) {
             tag.setDescription(description);
         }
         
-        tag.setParentTag(parentTag);
+        tag.setParentTag(normalizedParent);
         
         OrganizationTag updatedTag = organizationTagRepository.save(tag);
         
@@ -687,25 +833,28 @@ public class UserService {
     public void deleteOrganizationTag(String tagId, String adminUsername) {
         // 验证操作者是否为管理员
         User admin = userRepository.findByUsername(adminUsername)
-                .orElseThrow(() -> new CustomException("Admin not found", HttpStatus.NOT_FOUND));
+                .orElseThrow(() -> new CustomException("管理员不存在", HttpStatus.NOT_FOUND));
         
-        if (admin.getRole() != User.Role.ADMIN) {
-            throw new CustomException("Only administrators can delete organization tags", HttpStatus.FORBIDDEN);
+        if (!admin.getRole().isAdministrator()) {
+            throw new CustomException("仅管理员可删除组织标签", HttpStatus.FORBIDDEN);
         }
         
         // 获取要删除的标签
         OrganizationTag tag = organizationTagRepository.findByTagId(tagId)
-                .orElseThrow(() -> new CustomException("Organization tag not found", HttpStatus.NOT_FOUND));
+                .orElseThrow(() -> new CustomException("组织标签不存在", HttpStatus.NOT_FOUND));
+        if (DEFAULT_ORG_TAG.equals(tagId) || "admin".equals(tagId) || tagId.startsWith(PRIVATE_TAG_PREFIX)) {
+            throw new CustomException("系统组织不可删除", HttpStatus.FORBIDDEN);
+        }
         
         // 检查是否是特殊标签（如默认标签）
         if (DEFAULT_ORG_TAG.equals(tagId)) {
-            throw new CustomException("Cannot delete the default organization tag", HttpStatus.BAD_REQUEST);
+            throw new CustomException("不能删除默认组织标签", HttpStatus.BAD_REQUEST);
         }
         
         // 检查是否有子标签
         List<OrganizationTag> children = organizationTagRepository.findByParentTag(tagId);
         if (!children.isEmpty()) {
-            throw new CustomException("Cannot delete a tag with child tags", HttpStatus.BAD_REQUEST);
+            throw new CustomException("不能删除包含子标签的组织标签", HttpStatus.BAD_REQUEST);
         }
         
         // 检查是否有用户使用此标签
@@ -714,27 +863,18 @@ public class UserService {
             if (user.getOrgTags() != null && !user.getOrgTags().isEmpty()) {
                 Set<String> userTags = new HashSet<>(Arrays.asList(user.getOrgTags().split(",")));
                 if (userTags.contains(tagId)) {
-                    throw new CustomException("Cannot delete a tag that is assigned to users", HttpStatus.CONFLICT);
+                    throw new CustomException("不能删除已分配给用户的组织标签", HttpStatus.CONFLICT);
                 }
                 
                 // 检查是否被用作主组织标签
                 if (tagId.equals(user.getPrimaryOrg())) {
-                    throw new CustomException("Cannot delete a tag that is used as primary organization", HttpStatus.CONFLICT);
+                    throw new CustomException("不能删除正被用作主组织的标签", HttpStatus.CONFLICT);
                 }
             }
         }
         
-        // 检查是否有文档使用此标签（此处应检查file_upload表中的org_tag字段）
-        // 由于我们没有直接访问FileUploadRepository，这里采用简化的方式检查
-        // 实际实现中，应该注入FileUploadRepository并使用正确的查询方法
-        try {
-            long fileCount = 0; // 应该是 fileUploadRepository.countByOrgTag(tagId);
-            if (fileCount > 0) {
-                throw new CustomException("Cannot delete a tag that is associated with documents", HttpStatus.CONFLICT);
-            }
-        } catch (Exception e) {
-            logger.error("Error checking file usage of tag: {}", tagId, e);
-            throw new CustomException("Failed to check if tag is used by documents", HttpStatus.INTERNAL_SERVER_ERROR);
+        if (fileUploadRepository.countByOrgTag(tagId) > 0 || organizationJoinRequestRepository.existsByOrganizationTagId(tagId)) {
+            throw new CustomException("已有业务数据的组织只能归档", HttpStatus.CONFLICT);
         }
         
         // 删除标签
@@ -756,11 +896,40 @@ public class UserService {
      * @param size 每页大小
      * @return 用户列表数据
      */
-    public Map<String, Object> getUserList(String keyword, String orgTag, Integer status, int page, int size) {
+    /** 用户列表排序字段白名单：前端字段名 -> 实体属性名 */
+    private static final Map<String, String> USER_LIST_SORT_FIELDS = Map.of(
+            "createTime", "createdAt",
+            "lastLoginTime", "lastLoginAt"
+    );
+
+    /**
+     * 解析用户列表的排序规则，仅支持白名单字段，默认按创建时间升序
+     */
+    private Sort resolveUserListSort(String sortField, String sortOrder) {
+        // Map.of 创建的不可变 Map 不允许 null key，需先判空
+        String property = sortField == null ? null : USER_LIST_SORT_FIELDS.get(sortField);
+        if (property == null) {
+            return Sort.by(Sort.Direction.ASC, "createdAt");
+        }
+        Sort.Direction direction = "desc".equalsIgnoreCase(sortOrder) ? Sort.Direction.DESC : Sort.Direction.ASC;
+        return Sort.by(direction, property);
+    }
+
+    /** 内存过滤路径下与数据库排序保持一致的比较器（升序 null 在前，降序 null 在后） */
+    private Comparator<User> resolveUserListComparator(String sortField, String sortOrder) {
+        boolean byLastLogin = "lastLoginTime".equals(sortField);
+        Comparator<User> comparator = byLastLogin
+                ? Comparator.comparing(User::getLastLoginAt, Comparator.nullsFirst(Comparator.naturalOrder()))
+                : Comparator.comparing(User::getCreatedAt, Comparator.nullsFirst(Comparator.naturalOrder()));
+        return "desc".equalsIgnoreCase(sortOrder) ? comparator.reversed() : comparator;
+    }
+
+    public Map<String, Object> getUserList(String keyword, String orgTag, Integer status, int page, int size, boolean revealEmail,
+                                           String sortField, String sortOrder) {
         // 页码从1开始，需要转换为从0开始
         int pageIndex = page > 0 ? page - 1 : 0;
         // 创建分页请求
-        Pageable pageable = PageRequest.of(pageIndex, size, Sort.by("createdAt").descending());
+        Pageable pageable = PageRequest.of(pageIndex, size, resolveUserListSort(sortField, sortOrder));
         
         // 获取用户列表
         Page<User> userPage;
@@ -784,7 +953,8 @@ public class UserService {
                         
                         // 过滤关键词
                         if (keyword != null && !keyword.isEmpty()) {
-                            boolean matchesKeyword = user.getUsername().contains(keyword);
+                            boolean matchesKeyword = user.getUsername().contains(keyword)
+                                    || Objects.toString(user.getDisplayName(), "").contains(keyword);
                             if (!matchesKeyword) {
                                 return false;
                             }
@@ -792,13 +962,16 @@ public class UserService {
                         
                         // 过滤状态
                         if (status != null) {
-                            return user.getRole() == (status == 1 ? User.Role.USER : User.Role.ADMIN);
+                            return status == 1 ? user.getRole() == User.Role.USER : user.getRole().isAdministrator();
                         }
                         
                         return true;
                     })
                     .collect(Collectors.toList());
-            
+
+            // 手动排序（与数据库排序规则保持一致）
+            filteredUsers.sort(resolveUserListComparator(sortField, sortOrder));
+
             // 手动分页
             int start = (int) pageable.getOffset();
             int end = Math.min((start + pageable.getPageSize()), filteredUsers.size());
@@ -815,7 +988,8 @@ public class UserService {
                     .filter(user -> {
                         // 过滤关键词
                         if (keyword != null && !keyword.isEmpty()) {
-                            boolean matchesKeyword = user.getUsername().contains(keyword);
+                            boolean matchesKeyword = user.getUsername().contains(keyword)
+                                    || Objects.toString(user.getDisplayName(), "").contains(keyword);
                             if (!matchesKeyword) {
                                 return false;
                             }
@@ -823,7 +997,7 @@ public class UserService {
                         
                         // 过滤状态
                         if (status != null) {
-                            return user.getRole() == (status == 1 ? User.Role.USER : User.Role.ADMIN);
+                            return status == 1 ? user.getRole() == User.Role.USER : user.getRole().isAdministrator();
                         }
                         
                         return true;
@@ -839,27 +1013,27 @@ public class UserService {
                     Map<String, Object> userMap = new HashMap<>();
                     userMap.put("userId", user.getId());
                     userMap.put("username", user.getUsername());
+                    userMap.put("displayName", user.getDisplayName() == null ? user.getUsername() : user.getDisplayName());
                     
                     // 获取用户组织标签的详细信息
-                    List<Map<String, String>> orgTagDetails = new ArrayList<>();
-                    if (user.getOrgTags() != null && !user.getOrgTags().isEmpty()) {
-                        Arrays.stream(user.getOrgTags().split(","))
-                                .forEach(tagId -> {
-                                    OrganizationTag tag = organizationTagRepository.findByTagId(tagId)
-                                            .orElse(null);
-                                    if (tag != null) {
-                                        Map<String, String> tagInfo = new HashMap<>();
-                                        tagInfo.put("tagId", tag.getTagId());
-                                        tagInfo.put("name", tag.getName());
-                                        orgTagDetails.add(tagInfo);
-                                    }
-                                });
-                    }
+                    List<Map<String, String>> orgTagDetails = organizationMembershipService.direct(user).stream()
+                            .map(membership -> {
+                                Map<String, String> tagInfo = new HashMap<>();
+                                tagInfo.put("tagId", membership.getOrganization().getTagId());
+                                tagInfo.put("name", membership.getOrganization().getName());
+                                return tagInfo;
+                            }).toList();
                     
                     userMap.put("orgTags", orgTagDetails);
                     userMap.put("primaryOrg", user.getPrimaryOrg());
                     userMap.put("status", user.getRole() == User.Role.USER ? 1 : 0);
+                    userMap.put("role", user.getRole());
+                    userMap.put("email", user.getEmailVerifiedAt() == null ? "" : revealEmail ? user.getEmail() : maskEmail(user.getEmail()));
+                    userMap.put("emailVerified", user.getEmailVerifiedAt() != null);
                     userMap.put("createdAt", user.getCreatedAt());
+                    // 前端用户列表读取 createTime / lastLoginTime 字段
+                    userMap.put("createTime", user.getCreatedAt());
+                    userMap.put("lastLoginTime", user.getLastLoginAt());
                     
                     return userMap;
                 })
@@ -874,5 +1048,16 @@ public class UserService {
         result.put("number", userPage.getNumber() + 1); // 转换为从1开始的页码
         
         return result;
+    }
+
+    private String maskEmail(String email) {
+        if (email == null || !email.contains("@")) return "";
+        int at = email.indexOf('@');
+        String local = email.substring(0, at);
+        return local.substring(0, Math.min(2, local.length())) + "***" + email.substring(at);
+    }
+
+    private String emptyToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 }

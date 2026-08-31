@@ -21,9 +21,10 @@ class DocumentPermissionPolicyTest {
     }
 
     @Test
-    void privateDocumentsAreLimitedToOwnerAndAdmin() {
+    void privateDocumentsAreLimitedToOwnerAndSuperAdmin() {
         assertTrue(DocumentPermissionPolicy.canAccessPrivateDocument("alice", "alice", "USER"));
-        assertTrue(DocumentPermissionPolicy.canAccessPrivateDocument("alice", "root", "ADMIN"));
+        assertFalse(DocumentPermissionPolicy.canAccessPrivateDocument("alice", "root", "ADMIN"));
+        assertTrue(DocumentPermissionPolicy.canAccessPrivateDocument("alice", "root", "SUPER_ADMIN"));
         assertFalse(DocumentPermissionPolicy.canAccessPrivateDocument("alice", "bob", "USER"));
     }
 }

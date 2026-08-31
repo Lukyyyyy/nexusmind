@@ -69,23 +69,23 @@ class DocumentServiceTest {
     }
 
     @Test
-    void administratorCanSeeAllPrivateSpaceDocuments() {
-        User admin = user(9L, "root", User.Role.ADMIN);
+    void superAdministratorCanSeeAllPrivateSpaceDocuments() {
+        User admin = user(9L, "root", User.Role.SUPER_ADMIN);
         users.save(admin);
         fileUploads.files = List.of(
                 file("alice-private.pdf", "alice", "PRIVATE_alice", false),
                 file("bob-private.pdf", "bob", "PRIVATE_bob", false)
         );
 
-        List<FileUpload> result = documentService.getAccessibleFiles("root", "", "ADMIN");
+        List<FileUpload> result = documentService.getAccessibleFiles("root", "", "SUPER_ADMIN");
 
         assertEquals(List.of("alice-private.pdf", "bob-private.pdf"),
                 result.stream().map(FileUpload::getFileName).toList());
     }
 
     @Test
-    void administratorRoleIsResolvedForInternalDocumentAccessCalls() {
-        User admin = user(9L, "root", User.Role.ADMIN);
+    void superAdministratorRoleIsResolvedForInternalDocumentAccessCalls() {
+        User admin = user(9L, "root", User.Role.SUPER_ADMIN);
         users.save(admin);
         fileUploads.files = List.of(file("alice-private.pdf", "alice", "PRIVATE_alice", false));
 

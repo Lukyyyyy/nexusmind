@@ -174,7 +174,7 @@ public class DocumentService {
             
             // 使用有效标签查询文件
             List<FileUpload> files;
-            if ("ADMIN".equals(role)) {
+            if ("ADMIN".equals(role) || "SUPER_ADMIN".equals(role)) {
                 files = fileUploadRepository.findAll();
                 logger.debug("管理员返回全部文件");
             } else if (userEffectiveTags.isEmpty()) {
@@ -189,7 +189,7 @@ public class DocumentService {
             
             List<FileUpload> accessibleFiles = files.stream()
                     .filter(file -> !DocumentPermissionPolicy.isPrivateOrgTag(file.getOrgTag())
-                            || "ADMIN".equals(role)
+                            || "SUPER_ADMIN".equals(role)
                             || ownerIds.contains(file.getUserId()))
                     .toList();
 

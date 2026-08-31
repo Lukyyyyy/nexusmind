@@ -119,7 +119,7 @@ public class KnowledgeGraphService {
     }
 
     private FileUpload requireManageableFile(String fileMd5, String userId, String role) {
-        if ("ADMIN".equals(role)) {
+        if ("ADMIN".equals(role) || "SUPER_ADMIN".equals(role)) {
             return fileUploadRepository.findByFileMd5(fileMd5)
                     .orElseThrow(() -> new CustomException("文档不存在", HttpStatus.NOT_FOUND));
         }

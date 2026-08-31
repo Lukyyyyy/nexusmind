@@ -31,7 +31,7 @@ public class GraphPromptTemplateController {
     public ResponseEntity<?> delete(Authentication authentication, @PathVariable Long id) {
         service.delete(authentication.getName(), id); return ok(Map.of());
     }
-    private ResponseEntity<?> ok(Object data) { return ResponseEntity.ok(Map.of("code", 200, "message", "success", "data", data)); }
+    private ResponseEntity<?> ok(Object data) { return ResponseEntity.ok(Map.of("code", 200, "message", "操作成功", "data", data)); }
 
     @ExceptionHandler(CustomException.class)
     public ResponseEntity<?> custom(CustomException exception) {

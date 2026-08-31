@@ -29,14 +29,14 @@ public class AuthController {
             if (request.refreshToken() == null || request.refreshToken().isEmpty()) {
                 LogUtils.logUserOperation("anonymous", "REFRESH_TOKEN", "validation", "FAILED_EMPTY_REFRESH_TOKEN");
                 monitor.end("刷新token失败：refreshToken为空");
-                return ResponseEntity.badRequest().body(Map.of("code", 400, "message", "Refresh token cannot be empty"));
+                return ResponseEntity.badRequest().body(Map.of("code", 400, "message", "刷新令牌不能为空"));
             }
 
             // 验证refreshToken是否有效（这里我们用相同的验证逻辑）
             if (!jwtUtils.validateRefreshToken(request.refreshToken())) {
                 LogUtils.logUserOperation("anonymous", "REFRESH_TOKEN", "validation", "FAILED_INVALID_REFRESH_TOKEN");
                 monitor.end("刷新token失败：refreshToken无效");
-                return ResponseEntity.status(401).body(Map.of("code", 401, "message", "Invalid refresh token"));
+                return ResponseEntity.status(401).body(Map.of("code", 401, "message", "刷新令牌无效"));
             }
 
             // 从refreshToken中提取用户名
@@ -44,7 +44,7 @@ public class AuthController {
             if (username == null || username.isEmpty()) {
                 LogUtils.logUserOperation("anonymous", "REFRESH_TOKEN", "extraction", "FAILED_NO_USERNAME");
                 monitor.end("刷新token失败：无法提取用户名");
-                return ResponseEntity.status(401).body(Map.of("code", 401, "message", "Cannot extract username from refresh token"));
+                return ResponseEntity.status(401).body(Map.of("code", 401, "message", "无法从刷新令牌中获取用户名"));
             }
 
             // 生成新的token和refreshToken
@@ -56,7 +56,7 @@ public class AuthController {
 
             return ResponseEntity.ok(Map.of(
                 "code", 200, 
-                "message", "Token refreshed successfully", 
+                "message", "令牌刷新成功",
                 "data", Map.of(
                     "token", newToken,
                     "refreshToken", newRefreshToken
@@ -69,7 +69,7 @@ public class AuthController {
         } catch (Exception e) {
             LogUtils.logBusinessError("REFRESH_TOKEN", username, "刷新token异常: %s", e, e.getMessage());
             monitor.end("刷新token异常: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("code", 500, "message", "Internal server error"));
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("code", 500, "message", "服务器内部错误"));
         }
     }
 

@@ -37,7 +37,7 @@ public class GraphPromptTemplateService implements ApplicationRunner {
 
     @Transactional(readOnly = true)
     public List<TemplateResponse> list(String username) {
-        boolean admin = requireUser(username).getRole() == User.Role.ADMIN;
+        boolean admin = requireUser(username).getRole().isAdministrator();
         List<GraphPromptTemplate> values = admin
                 ? repository.findAllByOrderByDefaultTemplateDescNameAsc()
                 : repository.findByEnabledTrueOrderByDefaultTemplateDescNameAsc();
@@ -108,7 +108,7 @@ public class GraphPromptTemplateService implements ApplicationRunner {
                 .orElseThrow(() -> new CustomException("用户不存在", HttpStatus.NOT_FOUND));
     }
     private void requireAdmin(String username) {
-        if (requireUser(username).getRole() != User.Role.ADMIN)
+        if (!requireUser(username).getRole().isAdministrator())
             throw new CustomException("只有管理员可以维护提示词模板", HttpStatus.FORBIDDEN);
     }
     private boolean blank(String value) { return value == null || value.isBlank(); }

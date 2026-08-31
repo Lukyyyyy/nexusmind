@@ -124,7 +124,7 @@ public class OrganizationKnowledgeGraphService {
         List<FileUpload> accessible = documentService.getAccessibleFiles(userId, "", role).stream()
                 .filter(file -> file.getOrgTag() != null && !file.getOrgTag().isBlank())
                 .toList();
-        Set<String> memberships = "ADMIN".equals(role)
+        Set<String> memberships = isAdministrator(role)
                 ? Set.of()
                 : new HashSet<>(documentService.getEffectiveOrganizationTags(userId));
         Map<String, String> names = organizationTagRepository.findAll().stream()
@@ -143,7 +143,7 @@ public class OrganizationKnowledgeGraphService {
                 addScope(scopes, KnowledgeGraphStoreService.publicOrganizationScope(orgTag), orgTag,
                         orgName, ScopeType.PUBLIC, file);
             }
-            if ("ADMIN".equals(role) || memberships.contains(orgTag)) {
+            if (isAdministrator(role) || memberships.contains(orgTag)) {
                 addScope(scopes, KnowledgeGraphStoreService.internalOrganizationScope(orgTag), orgTag,
                         orgName, ScopeType.INTERNAL, file);
             }
@@ -154,6 +154,10 @@ public class OrganizationKnowledgeGraphService {
                 .sorted(Comparator.comparing(OrganizationScopeSelection::name, String.CASE_INSENSITIVE_ORDER)
                         .thenComparing(OrganizationScopeSelection::scopeType))
                 .toList();
+    }
+
+    private boolean isAdministrator(String role) {
+        return "ADMIN".equals(role) || "SUPER_ADMIN".equals(role);
     }
 
     private void addScope(Map<String, MutableScope> scopes, String scopeId, String tagId,

@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.Collection;
 import java.util.Collections;
+import java.util.List;
 
 /**
  * 实现 Spring Security 的 UserDetailsService 接口，用于加载用户的详细信息（包括用户名、密码和权限）。
@@ -44,6 +45,9 @@ public class CustomUserDetailsService implements UserDetailsService {
      * 将用户的角色转换为 Spring Security 的权限格式。
      */
     private Collection<? extends GrantedAuthority> getAuthorities(User.Role role) {
+        if (role == User.Role.SUPER_ADMIN) {
+            return List.of(new SimpleGrantedAuthority("ROLE_SUPER_ADMIN"), new SimpleGrantedAuthority("ROLE_ADMIN"));
+        }
         return Collections.singletonList(new SimpleGrantedAuthority("ROLE_" + role.name()));
     }
 }
