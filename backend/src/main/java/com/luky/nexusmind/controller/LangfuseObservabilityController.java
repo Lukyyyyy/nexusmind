@@ -92,7 +92,7 @@ public class LangfuseObservabilityController {
     }
 
     private static ResponseEntity<Map<String, Object>> ok(Object data) {
-        return ResponseEntity.ok(Map.of("code", 200, "message", "success", "data", data));
+        return ResponseEntity.ok(Map.of("code", 200, "message", "操作成功", "data", data));
     }
 
     private static ResponseEntity<Map<String, Object>> error(LangfuseObservabilityException e) {

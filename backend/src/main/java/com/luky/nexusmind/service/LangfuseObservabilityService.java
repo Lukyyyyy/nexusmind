@@ -2,6 +2,8 @@ package com.luky.nexusmind.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
@@ -31,7 +33,12 @@ import java.util.stream.Collectors;
 @Service
 public class LangfuseObservabilityService {
 
+    private static final Logger logger = LoggerFactory.getLogger(LangfuseObservabilityService.class);
+
     static final String OBSERVATION_FIELDS = "core,basic,model,usage,metrics,trace_context";
+
+    /** 详情查询需要内容与属性：io=input/output，metadata=span 属性（省略 fields 时 Langfuse 只返回 core+basic） */
+    static final String DETAIL_OBSERVATION_FIELDS = "core,basic,time,io,metadata,model,usage,metrics,trace_context";
 
     private final boolean enabled;
     private final String baseUrl;
@@ -145,8 +152,9 @@ public class LangfuseObservabilityService {
             return new TraceDetailResponse(false, "Langfuse 未配置或未启用", traceId, null, null, List.of());
         }
 
+        // 详情查询：显式带上 io/metadata 组并展开 metadata（否则 Langfuse 只返回 core+basic，且 metadata 截断 200 字符）
         LangfuseObservationPage page = client.fetchObservations(LangfuseObservationQuery.forTrace(
-                userId, traceId, from, to, 1000, OBSERVATION_FIELDS));
+                userId, traceId, from, to, 1000, DETAIL_OBSERVATION_FIELDS, true));
         List<ObservationView> observations = page.data().stream()
                 .sorted(Comparator.comparing(LangfuseObservation::startTime))
                 .map(ObservationView::from)
@@ -224,7 +232,8 @@ public class LangfuseObservabilityService {
                                            String traceName,
                                            String cursor,
                                            int limit,
-                                           String fields) {
+                                           String fields,
+                                           boolean expandMetadata) {
         static LangfuseObservationQuery forUser(String userId,
                                                 Instant from,
                                                 Instant to,
@@ -233,7 +242,7 @@ public class LangfuseObservabilityService {
                                                 String cursor,
                                                 int limit,
                                                 String fields) {
-            return new LangfuseObservationQuery(userId, null, from, to, level, traceName, cursor, limit, fields);
+            return new LangfuseObservationQuery(userId, null, from, to, level, traceName, cursor, limit, fields, false);
         }
 
         static LangfuseObservationQuery forTrace(String userId,
@@ -241,8 +250,9 @@ public class LangfuseObservabilityService {
                                                  Instant from,
                                                  Instant to,
                                                  int limit,
-                                                 String fields) {
-            return new LangfuseObservationQuery(userId, traceId, from, to, null, null, null, limit, fields);
+                                                 String fields,
+                                                 boolean expandMetadata) {
+            return new LangfuseObservationQuery(userId, traceId, from, to, null, null, null, limit, fields, expandMetadata);
         }
     }
 
@@ -356,8 +366,8 @@ public class LangfuseObservabilityService {
                     observation.traceName(),
                     observation.sessionId(),
                     observation.metadata() == null ? Map.of() : observation.metadata(),
-                    null,
-                    null);
+                    observation.input(),
+                    observation.output());
         }
     }
 
@@ -596,8 +606,14 @@ public class LangfuseObservabilityService {
                     .queryParam("fromStartTime", DateTimeFormatter.ISO_INSTANT.withZone(ZoneOffset.UTC).format(query.from()))
                     .queryParam("toStartTime", DateTimeFormatter.ISO_INSTANT.withZone(ZoneOffset.UTC).format(query.to()))
                     .queryParam("userId", query.userId())
-                    .queryParam("limit", query.limit())
-                    .queryParam("fields", query.fields());
+                    .queryParam("limit", query.limit());
+            // fields 为空表示不下发该参数；expandMetadata 展开被 Langfuse 默认截断为 200 字符的 metadata
+            if (hasText(query.fields())) {
+                builder.queryParam("fields", query.fields());
+            }
+            if (query.expandMetadata()) {
+                builder.queryParam("expandMetadata", "true");
+            }
             if (hasText(query.traceId())) {
                 builder.queryParam("traceId", query.traceId());
             }
@@ -645,8 +661,24 @@ public class LangfuseObservabilityService {
                     doubleOrNull(item.path("latency")),
                     textOrNull(item.path("traceName")),
                     objectMap(item.path("metadata")),
-                    null,
-                    null);
+                    jsonOrNull(item.path("input")),
+                    jsonOrNull(item.path("output")));
+        }
+
+        /** Langfuse 的 input/output 可能是字符串也可能是任意 JSON 对象，统一序列化为字符串返回前端 */
+        private String jsonOrNull(JsonNode node) {
+            if (node == null || node.isMissingNode() || node.isNull()) {
+                return null;
+            }
+            if (node.isTextual()) {
+                return node.textValue();
+            }
+            try {
+                return objectMapper.writeValueAsString(node);
+            } catch (Exception e) {
+                logger.warn("序列化 Langfuse observation 内容失败: {}", e.getMessage());
+                return String.valueOf(node);
+            }
         }
 
         @SuppressWarnings("unchecked")

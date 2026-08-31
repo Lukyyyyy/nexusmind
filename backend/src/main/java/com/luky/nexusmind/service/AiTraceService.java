@@ -16,6 +16,8 @@ import io.opentelemetry.sdk.resources.Resource;
 import io.opentelemetry.sdk.trace.SdkTracerProvider;
 import io.opentelemetry.sdk.trace.export.BatchSpanProcessor;
 import jakarta.annotation.PreDestroy;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -25,6 +27,8 @@ import java.util.Base64;
 
 @Service
 public class AiTraceService {
+
+    private static final Logger logger = LoggerFactory.getLogger(AiTraceService.class);
 
     private final boolean enabled;
     private final SdkTracerProvider tracerProvider;
@@ -70,6 +74,9 @@ public class AiTraceService {
             this.tracerProvider = null;
             this.tracer = OpenTelemetry.noop().getTracer("com.luky.nexusmind.ai");
         }
+        // 启动即打印运行时生效值，排查"未采集内容"类问题时无需再猜配置层
+        logger.info("Langfuse 链路追踪: {}, environment: {}, 内容采集: {}",
+                this.enabled ? "开启" : "关闭", environment, shouldCaptureContent() ? "开启" : "关闭");
     }
 
     public TraceSpan startSpan(String name, String userId, String sessionId, String conversationId) {

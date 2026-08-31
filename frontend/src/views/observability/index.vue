@@ -246,9 +246,34 @@ function formatCost(value?: number | null) {
   return `$${value.toFixed(6)}`;
 }
 
+/** observation 的输入/输出可能是 JSON 也可能是纯文本，尽量美化 */
+function formatContent(value: string) {
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch {
+    return value;
+  }
+}
+
+/** 过滤 OTel 资源属性等噪音，展开 attributes 前缀，只留业务可读的键值 */
 function formatMetadata(value: Record<string, unknown>) {
-  const text = JSON.stringify(value || {}, null, 2);
+  const filtered: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(value || {})) {
+    if (key.startsWith('resourceAttributes.') || key.startsWith('scope.') || key.startsWith('telemetry.')) continue;
+    if (key === 'attributes' && val && typeof val === 'object' && !Array.isArray(val)) {
+      for (const [innerKey, innerVal] of Object.entries(val as Record<string, unknown>)) {
+        filtered[innerKey] = innerVal;
+      }
+      continue;
+    }
+    filtered[key.startsWith('attributes.') ? key.slice('attributes.'.length) : key] = val;
+  }
+  const text = JSON.stringify(filtered, null, 2);
   return text === '{}' ? '无 metadata' : text;
+}
+
+function hasCapturedContent(observations: Api.Observability.Observation[]) {
+  return observations.some(item => item.input || item.output);
 }
 
 watch([preset, level], () => loadData());
@@ -378,7 +403,13 @@ onMounted(() => {
               <NDescriptionsItem label="Trace ID">{{ selectedTrace.traceId }}</NDescriptionsItem>
               <NDescriptionsItem label="Session">{{ selectedTrace.sessionId || '-' }}</NDescriptionsItem>
               <NDescriptionsItem label="步骤数">{{ selectedTrace.observations.length }}</NDescriptionsItem>
-              <NDescriptionsItem label="内容">{{ '输入/输出内容默认隐藏，后端未返回' }}</NDescriptionsItem>
+              <NDescriptionsItem label="内容">
+                {{
+                  hasCapturedContent(selectedTrace.observations)
+                    ? '已采集输入/输出与工具调用详情，展开下方步骤查看'
+                    : '未采集内容：需设置 LANGFUSE_CAPTURE_CONTENT=true'
+                }}
+              </NDescriptionsItem>
             </NDescriptions>
             <NDataTable
               :columns="observationColumns"
@@ -391,10 +422,23 @@ onMounted(() => {
               <NCollapseItem
                 v-for="item in selectedTrace.observations"
                 :key="item.id"
-                :title="`${item.name || item.id} metadata`"
+                :title="`${item.name || item.id} 详情`"
                 :name="item.id"
               >
-                <NCode :code="formatMetadata(item.metadata)" language="json" word-wrap />
+                <div class="flex flex-col gap-12px">
+                  <div v-if="item.input">
+                    <div class="mb-4px text-12px text-#8a8f99">输入</div>
+                    <NCode :code="formatContent(item.input)" language="json" word-wrap />
+                  </div>
+                  <div v-if="item.output">
+                    <div class="mb-4px text-12px text-#8a8f99">输出</div>
+                    <NCode :code="formatContent(item.output)" language="json" word-wrap />
+                  </div>
+                  <div>
+                    <div class="mb-4px text-12px text-#8a8f99">Metadata</div>
+                    <NCode :code="formatMetadata(item.metadata)" language="json" word-wrap />
+                  </div>
+                </div>
               </NCollapseItem>
             </NCollapse>
           </div>
