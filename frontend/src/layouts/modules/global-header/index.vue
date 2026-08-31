@@ -6,6 +6,7 @@ import GlobalBreadcrumb from '../global-breadcrumb/index.vue';
 import GlobalSearch from '../global-search/index.vue';
 import ThemeButton from './components/theme-button.vue';
 import UserAvatar from './components/user-avatar.vue';
+import NotificationCenter from './components/notification-center.vue';
 
 defineOptions({
   name: 'GlobalHeader'
@@ -74,6 +75,7 @@ const isDev = import.meta.env.DEV;
         @switch="themeStore.toggleThemeScheme"
       />
       <ThemeButton v-if="isDev" />
+      <NotificationCenter />
       <UserAvatar />
     </div>
   </DarkModeContainer>

@@ -23,12 +23,14 @@ export const useAuthStore = defineStore(SetupStoreId.Auth, () => {
   const userInfo: Api.Auth.UserInfo = reactive({
     id: 0,
     username: '',
+    displayName: '',
     role: 'USER',
     orgTags: [],
     primaryOrg: ''
   });
 
-  const isAdmin = computed(() => userInfo.role === 'ADMIN');
+  const isAdmin = computed(() => userInfo.role === 'ADMIN' || userInfo.role === 'SUPER_ADMIN');
+  const isSuperAdmin = computed(() => userInfo.role === 'SUPER_ADMIN');
 
   /** is super role in static route */
   const isStaticSuper = computed(() => {
@@ -96,14 +98,14 @@ export const useAuthStore = defineStore(SetupStoreId.Auth, () => {
   /**
    * Login
    *
-   * @param userName User name
+   * @param email Login email
    * @param password Password
    * @param [redirect=true] Whether to redirect after login. Default is `true`
    */
-  async function login(userName: string, password: string, redirect = true) {
+  async function login(email: string, password: string, redirect = true) {
     startLoading();
 
-    const { data: loginToken, error } = await fetchLogin(userName, password);
+    const { data: loginToken, error } = await fetchLogin(email, password);
 
     if (!error) {
       const pass = await loginByToken(loginToken);
@@ -121,7 +123,7 @@ export const useAuthStore = defineStore(SetupStoreId.Auth, () => {
 
         window.$notification?.success({
           title: $t('page.login.common.loginSuccess'),
-          content: $t('page.login.common.welcomeBack', { userName: userInfo.username }),
+          content: $t('page.login.common.welcomeBack', { userName: userInfo.displayName || userInfo.username }),
           duration: 4500
         });
       }
@@ -194,6 +196,7 @@ export const useAuthStore = defineStore(SetupStoreId.Auth, () => {
     isStaticSuper,
     isLogin,
     isAdmin,
+    isSuperAdmin,
     loginLoading,
     resetStore,
     login,

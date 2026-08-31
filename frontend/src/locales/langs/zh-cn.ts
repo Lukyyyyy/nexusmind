@@ -166,11 +166,13 @@ const local: App.I18n.Schema = {
     'chat-history': '聊天审计',
     'knowledge-base': '知识库',
     'organization-graph': '组织知识图谱',
-    'org-tag': '组织标签',
+    'org-tag': '组织管理',
+    organization: '组织关系',
     'model-config': '模型配置',
     observability: '可观测数据',
     user: '用户管理',
-    'personal-center': '个人中心'
+    'personal-center': '个人中心',
+    'verify-email': '验证邮箱'
   },
   page: {
     login: {
@@ -226,7 +228,7 @@ const local: App.I18n.Schema = {
     required: '不能为空',
     userName: {
       required: '请输入用户名',
-      invalid: '用户名格式不正确'
+      invalid: '用户名需为4-32位英文字母、数字、下划线或短横线'
     },
     phone: {
       required: '请输入手机号',
@@ -234,7 +236,7 @@ const local: App.I18n.Schema = {
     },
     pwd: {
       required: '请输入密码',
-      invalid: '密码格式不正确，6-18位字符，包含字母、数字、下划线'
+      invalid: '密码需为8-72个字符，不能包含控制字符'
     },
     confirmPwd: {
       required: '请输入确认密码',

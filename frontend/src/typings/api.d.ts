@@ -40,9 +40,12 @@ declare namespace Api {
     interface UserInfo {
       id: number;
       username: string;
-      role: 'USER' | 'ADMIN';
+      displayName: string;
+      role: 'USER' | 'ADMIN' | 'SUPER_ADMIN';
       orgTags: string[];
       primaryOrg: string;
+      email?: string | null;
+      emailVerified?: boolean;
     }
   }
 
@@ -70,6 +73,9 @@ declare namespace Api {
       name: string;
       description: string;
       parentTag: string | null;
+      joinable?: boolean;
+      archivedAt?: string | null;
+      archiveReason?: string | null;
       children?: Item[];
     }
 
@@ -83,24 +89,85 @@ declare namespace Api {
     };
   }
 
+  namespace Organization {
+    type Membership = 'DIRECT' | 'INHERITED' | 'PENDING' | 'AVAILABLE';
+    interface Item {
+      tagId: string;
+      name: string;
+      path: string;
+      description: string;
+      membership: Membership;
+      system: boolean;
+      archived: boolean;
+      joinable: boolean;
+      primary: boolean;
+      joinedAt: string | null;
+    }
+    interface Overview {
+      mine: Item[];
+      discover: Item[];
+      discoverTotal: number;
+      primaryOrg: string;
+    }
+    interface JoinRequest {
+      id: number;
+      userId: number;
+      username: string;
+      displayName: string;
+      orgTag: string;
+      organization: string;
+      reason: string;
+      status: 'PENDING' | 'APPROVED' | 'REJECTED' | 'WITHDRAWN' | 'ARCHIVED' | 'REMOVED_BY_ADMIN';
+      decisionReason: string | null;
+      handledBy: string | null;
+      createdAt: string;
+      handledAt: string | null;
+    }
+    interface RequestPage extends Common.PaginatingCommonParams {
+      content: JoinRequest[];
+      pending?: number;
+    }
+  }
+
+  namespace Notification {
+    interface Item {
+      id: number;
+      type: string;
+      title: string;
+      content: string;
+      link: string | null;
+      read: boolean;
+      createdAt: string;
+    }
+    interface List extends Common.PaginatingCommonParams {
+      content: Item[];
+      unread: number;
+    }
+  }
+
   namespace User {
     type SearchParams = CommonType.RecordNullable<
       Common.CommonSearchParams & {
         keyword: string;
         orgTag: string;
         status: number;
+        sortField: 'createTime' | 'lastLoginTime';
+        sortOrder: 'asc' | 'desc';
       }
     >;
 
     type Item = {
       userId: string;
       username: string;
+      displayName: string;
       email: string;
       status: number;
       orgTags: Pick<OrgTag.Item, 'tagId' | 'name'>[];
       primaryOrg: string;
       createTime: string;
       lastLoginTime: string;
+      role: 'USER' | 'ADMIN' | 'SUPER_ADMIN';
+      emailVerified: boolean;
     };
 
     type List = Common.PaginatingQueryRecord<Item>;
@@ -108,7 +175,7 @@ declare namespace Api {
 
   namespace ModelConfig {
     type OwnerType = 'SYSTEM' | 'USER';
-    type ModelType = 'LLM' | 'EMBEDDING';
+    type ModelType = 'LLM' | 'EMBEDDING' | 'RERANK';
 
     interface Item {
       id: number;
@@ -128,6 +195,9 @@ declare namespace Api {
       dimension: number | null;
       batchSize: number | null;
       maxConcurrency: number | null;
+      instruct: string | null;
+      topN: number | null;
+      fps: number | null;
     }
 
     interface Overview {
@@ -135,6 +205,9 @@ declare namespace Api {
       selectedLlmConfigId: number | null;
       selectedEmbeddingConfigId: number | null;
       selectedGraphExtractionConfigId: number | null;
+      selectedRerankConfigId: number | null;
+      rerankWindowMin: number;
+      rerankWindowMax: number;
       admin: boolean;
     }
 
@@ -154,18 +227,23 @@ declare namespace Api {
       dimension: number | null;
       batchSize: number | null;
       maxConcurrency: number | null;
+      instruct: string | null;
+      topN: number | null;
+      fps: number | null;
     }
 
     interface PreferenceRequest {
       llmConfigId: number | null;
       embeddingConfigId: number | null;
       graphExtractionConfigId: number | null;
+      rerankConfigId: number | null;
     }
 
     interface Preference {
       llmConfigId: number | null;
       embeddingConfigId: number | null;
       graphExtractionConfigId: number | null;
+      rerankConfigId: number | null;
     }
   }
 
@@ -246,8 +324,8 @@ declare namespace Api {
       traceName: string | null;
       sessionId: string | null;
       metadata: Record<string, unknown>;
-      input: null;
-      output: null;
+      input: string | null;
+      output: string | null;
     }
 
     interface TraceDetail {

@@ -28,9 +28,11 @@ declare module "@elegant-router/types" {
     "model-config": "/model-config";
     "observability": "/observability";
     "org-tag": "/org-tag";
+    "organization": "/organization";
     "organization-graph": "/organization-graph";
     "personal-center": "/personal-center";
     "user": "/user";
+    "verify-email": "/verify-email";
   };
 
   /**
@@ -73,9 +75,11 @@ declare module "@elegant-router/types" {
     | "model-config"
     | "observability"
     | "org-tag"
+    | "organization"
     | "organization-graph"
     | "personal-center"
     | "user"
+    | "verify-email"
   >;
 
   /**
@@ -97,6 +101,7 @@ declare module "@elegant-router/types" {
     | "500"
     | "iframe-page"
     | "login"
+    | "verify-email"
     | "chat-history"
     | "chat"
     | "knowledge-base"
@@ -104,6 +109,7 @@ declare module "@elegant-router/types" {
     | "observability"
     | "org-tag"
     | "organization-graph"
+    | "organization"
     | "personal-center"
     | "user"
   >;

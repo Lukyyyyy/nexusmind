@@ -5,6 +5,7 @@ import { useThemeStore } from '@/store/modules/theme';
 import { useRouterPush } from '@/hooks/common/router';
 import PwdLogin from './modules/pwd-login.vue';
 import Register from './modules/register.vue';
+import ResetPwd from './modules/reset-pwd.vue';
 
 interface Props {
   /** The login module */
@@ -16,13 +17,14 @@ const props = defineProps<Props>();
 const themeStore = useThemeStore();
 const { toggleLoginModule } = useRouterPush();
 
-const moduleMap: Record<'pwd-login' | 'register', { title: string; component: Component }> = {
+const moduleMap: Record<'pwd-login' | 'register' | 'reset-pwd', { title: string; component: Component }> = {
   'pwd-login': { title: '登录', component: PwdLogin },
-  register: { title: '注册', component: Register }
+  register: { title: '注册', component: Register },
+  'reset-pwd': { title: '找回密码', component: ResetPwd }
 };
 
 const activeModule = computed(() => {
-  return props.module === 'register' ? moduleMap.register : moduleMap['pwd-login'];
+  return props.module === 'register' || props.module === 'reset-pwd' ? moduleMap[props.module] : moduleMap['pwd-login'];
 });
 
 const bgColor = computed(() => {
@@ -64,6 +66,10 @@ const bgColor = computed(() => {
               已有账号？
               <button type="button" class="account-link" @click="toggleLoginModule('pwd-login')">点此登录</button>
             </span>
+            <span v-else-if="props.module === 'reset-pwd'" class="account-tip">
+              想起密码？
+              <button type="button" class="account-link" @click="toggleLoginModule('pwd-login')">点此登录</button>
+            </span>
             <span v-else class="account-tip">
               没有账号？
               <button type="button" class="account-link" @click="toggleLoginModule('register')">点此注册</button>
@@ -90,6 +96,11 @@ const bgColor = computed(() => {
   padding: 40px 24px;
   background-image: none !important;
   color: #1f2937;
+
+  :deep(input:-webkit-autofill) {
+    box-shadow: 0 0 0 1000px #fff inset;
+    -webkit-text-fill-color: #1f2937;
+  }
 }
 
 .login-shell {

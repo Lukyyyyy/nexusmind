@@ -1,21 +1,25 @@
 <script setup lang="ts">
+import { useCountDown } from '@sa/hooks';
+import { REG_EMAIL } from '@/constants/reg';
 import { $t } from '@/locales';
 
 defineOptions({
   name: 'Register'
 });
 
-const { toggleLoginModule } = useRouterPush();
 const { formRef, validate } = useNaiveForm();
+const authStore = useAuthStore();
 
 interface FormModel {
-  username: string;
+  email: string;
+  verificationCode: string;
   password: string;
   confirmPassword: string;
 }
 
 const model: FormModel = reactive({
-  username: '',
+  email: '',
+  verificationCode: '',
   password: '',
   confirmPassword: ''
 });
@@ -24,20 +28,41 @@ const rules = computed<Record<keyof FormModel, App.Global.FormRule[]>>(() => {
   const { formRules, createConfirmPwdRule } = useFormRules();
 
   return {
-    username: formRules.userName,
+    email: formRules.email,
+    verificationCode: formRules.code,
     password: formRules.pwd,
     confirmPassword: createConfirmPwdRule(model.password)
   };
 });
 
 const loading = ref(false);
+const codeLoading = ref(false);
+const { count, start, isCounting } = useCountDown(60);
+
+async function sendCode() {
+  const email = model.email.trim().toLowerCase();
+  if (!REG_EMAIL.test(email)) {
+    window.$message?.error('请输入有效邮箱');
+    return;
+  }
+  codeLoading.value = true;
+  const { error } = await fetchRegistrationCode(email);
+  codeLoading.value = false;
+  if (!error) {
+    model.email = email;
+    start();
+    window.$message?.success('验证码已发送');
+  }
+}
+
 async function handleSubmit() {
   await validate();
   loading.value = true;
-  const { error } = await fetchRegister(model.username, model.password);
+  const email = model.email.trim().toLowerCase();
+  const { error } = await fetchRegister(email, model.verificationCode, model.password);
   if (!error) {
     window.$message?.success('注册成功');
-    toggleLoginModule('pwd-login');
+    await authStore.login(email, model.password);
   }
   loading.value = false;
 }
@@ -53,12 +78,20 @@ async function handleSubmit() {
     :show-label="false"
     @keyup.enter="handleSubmit"
   >
-    <NFormItem path="username">
-      <NInput v-model:value="model.username" :placeholder="$t('page.login.common.userNamePlaceholder')">
-        <template #prefix>
-          <icon-ant-design:user-outlined />
-        </template>
+    <NFormItem path="email">
+      <NInput v-model:value="model.email" placeholder="请输入邮箱">
+        <template #prefix><icon-ant-design:mail-outlined /></template>
       </NInput>
+    </NFormItem>
+    <NFormItem path="verificationCode">
+      <div class="verification-row">
+        <NInput v-model:value="model.verificationCode" maxlength="6" placeholder="请输入验证码">
+          <template #prefix><icon-ant-design:safety-certificate-outlined /></template>
+        </NInput>
+        <NButton :disabled="isCounting" :loading="codeLoading" @click="sendCode">
+          {{ isCounting ? `${count}秒后重发` : '发送验证码' }}
+        </NButton>
+      </div>
     </NFormItem>
     <NFormItem path="password">
       <NInput
@@ -115,5 +148,12 @@ async function handleSubmit() {
     font-size: 15px;
     letter-spacing: 0;
   }
+}
+
+.verification-row {
+  display: grid;
+  grid-template-columns: 1fr 118px;
+  gap: 12px;
+  width: 100%;
 }
 </style>

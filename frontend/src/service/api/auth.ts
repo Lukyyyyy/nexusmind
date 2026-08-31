@@ -3,15 +3,15 @@ import { request } from '../request';
 /**
  * Login
  *
- * @param username User name
+ * @param email Login email
  * @param password Password
  */
-export function fetchLogin(username: string, password: string) {
+export function fetchLogin(email: string, password: string) {
   return request<Api.Auth.LoginToken>({
     url: '/users/login',
     method: 'post',
     data: {
-      username,
+      email,
       password
     }
   });
@@ -21,14 +21,31 @@ export function fetchLogout() {
   return request({ url: '/users/logout', method: 'post' });
 }
 
-export function fetchRegister(username: string, password: string) {
+export function fetchRegistrationCode(email: string) {
+  return request({ url: '/users/registration-code', method: 'post', data: { email } });
+}
+
+export function fetchRegister(email: string, verificationCode: string, password: string) {
   return request({
     url: '/users/register',
     method: 'post',
     data: {
-      username,
-      password
+      password,
+      email,
+      verificationCode
     }
+  });
+}
+
+export function fetchPasswordResetCode(email: string) {
+  return request({ url: '/users/password-reset-code', method: 'post', data: { email } });
+}
+
+export function fetchResetPassword(email: string, verificationCode: string, password: string) {
+  return request({
+    url: '/users/reset-password',
+    method: 'post',
+    data: { email, verificationCode, password }
   });
 }
 

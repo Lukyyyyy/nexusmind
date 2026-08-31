@@ -4,6 +4,7 @@ import { useAuthStore } from '@/store/modules/auth';
 import { useFormRules, useNaiveForm } from '@/hooks/common/form';
 import { localStg } from '@/utils/storage';
 import { $t } from '@/locales';
+import { useRouterPush } from '@/hooks/common/router';
 
 defineOptions({
   name: 'PwdLogin'
@@ -11,9 +12,10 @@ defineOptions({
 
 const authStore = useAuthStore();
 const { formRef, validate } = useNaiveForm();
+const { toggleLoginModule } = useRouterPush();
 
 interface FormModel {
-  userName: string;
+  email: string;
   password: string;
   remember: boolean;
 }
@@ -21,7 +23,7 @@ interface FormModel {
 const rememberedLogin = localStg.get('rememberedLogin');
 
 const model: FormModel = reactive({
-  userName: rememberedLogin?.userName || '',
+  email: rememberedLogin?.email || '',
   password: rememberedLogin?.password || '',
   remember: rememberedLogin?.remember || false
 });
@@ -31,14 +33,14 @@ const rules = computed<Partial<Record<keyof FormModel, App.Global.FormRule[]>>>(
   const { formRules } = useFormRules();
 
   return {
-    userName: formRules.userName,
+    email: formRules.email,
     password: formRules.pwd
   };
 });
 
 async function handleSubmit() {
   await validate();
-  await authStore.login(model.userName, model.password);
+  await authStore.login(model.email.trim().toLowerCase(), model.password);
 
   if (!authStore.isLogin) {
     return;
@@ -46,7 +48,7 @@ async function handleSubmit() {
 
   if (model.remember) {
     localStg.set('rememberedLogin', {
-      userName: model.userName,
+      email: model.email.trim().toLowerCase(),
       password: model.password,
       remember: true
     });
@@ -66,11 +68,9 @@ async function handleSubmit() {
     :show-label="false"
     @keyup.enter="handleSubmit"
   >
-    <NFormItem path="userName">
-      <NInput v-model:value="model.userName" :placeholder="$t('page.login.common.userNamePlaceholder')">
-        <template #prefix>
-          <icon-ant-design:user-outlined />
-        </template>
+    <NFormItem path="email">
+      <NInput v-model:value="model.email" placeholder="请输入邮箱">
+        <template #prefix><icon-ant-design:mail-outlined /></template>
       </NInput>
     </NFormItem>
     <NFormItem path="password">
@@ -86,7 +86,8 @@ async function handleSubmit() {
       </NInput>
     </NFormItem>
     <div class="login-options">
-      <NCheckbox v-model:checked="model.remember">记住我</NCheckbox>
+      <NCheckbox v-model:checked="model.remember">自动登录</NCheckbox>
+      <button type="button" class="forgot-link" @click="toggleLoginModule('reset-pwd')">忘记密码</button>
     </div>
     <div class="login-actions">
       <NButton type="primary" size="large" block :loading="authStore.loginLoading" @click="handleSubmit">
@@ -114,6 +115,15 @@ async function handleSubmit() {
   justify-content: space-between;
   margin: 2px 0 18px;
   color: #64748b;
+  font-size: 13px;
+}
+
+.forgot-link {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: #245bdb;
+  cursor: pointer;
   font-size: 13px;
 }
 

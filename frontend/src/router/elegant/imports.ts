@@ -20,6 +20,7 @@ export const views: Record<LastLevelRouteKey, RouteComponent | (() => Promise<Ro
   500: () => import("@/views/_builtin/500/index.vue"),
   "iframe-page": () => import("@/views/_builtin/iframe-page/[url].vue"),
   login: () => import("@/views/_builtin/login/index.vue"),
+  "verify-email": () => import("@/views/_builtin/verify-email/index.vue"),
   "chat-history": () => import("@/views/chat-history/index.vue"),
   chat: () => import("@/views/chat/index.vue"),
   "knowledge-base": () => import("@/views/knowledge-base/index.vue"),
@@ -27,6 +28,7 @@ export const views: Record<LastLevelRouteKey, RouteComponent | (() => Promise<Ro
   observability: () => import("@/views/observability/index.vue"),
   "org-tag": () => import("@/views/org-tag/index.vue"),
   "organization-graph": () => import("@/views/organization-graph/index.vue"),
+  organization: () => import("@/views/organization/index.vue"),
   "personal-center": () => import("@/views/personal-center/index.vue"),
   user: () => import("@/views/user/index.vue"),
 };

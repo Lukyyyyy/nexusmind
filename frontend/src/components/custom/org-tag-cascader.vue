@@ -7,6 +7,7 @@ defineOptions({
 const props = defineProps<{
   options?: Api.OrgTag.Item[];
   excludePrivate?: boolean;
+  excludeAdmin?: boolean;
 }>();
 
 const model = defineModel<string | number | Array<number | string> | undefined | null>('value', { required: true });
@@ -24,9 +25,10 @@ onMounted(async () => {
   } else {
     await getOptions();
   }
-  if (props.excludePrivate) {
+  if (props.excludePrivate || props.excludeAdmin) {
     opts.value.forEach(x => {
-      x.disabled = (x as unknown as Api.OrgTag.Item).tagId.startsWith('PRIVATE_');
+      const tagId = (x as unknown as Api.OrgTag.Item).tagId;
+      x.disabled = Boolean((props.excludePrivate && tagId.startsWith('PRIVATE_')) || (props.excludeAdmin && tagId === 'admin'));
     });
   }
 });

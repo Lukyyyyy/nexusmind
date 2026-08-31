@@ -12,24 +12,30 @@ const props = defineProps<{
 const emit = defineEmits<{ submitted: [] }>();
 
 const visible = defineModel<boolean>('visible', { default: false });
+const authStore = useAuthStore();
 const loading = ref(false);
 const { formRef, validate, restoreValidation } = useNaiveForm();
 const { defaultRequiredRule } = useFormRules();
 
 type Model = {
   orgTags: string[];
+  reason: string;
+  currentPassword: string;
 };
 
 const model = ref<Model>(createDefaultModel());
 
 function createDefaultModel(): Model {
   return {
-    orgTags: []
+    orgTags: [],
+    reason: '',
+    currentPassword: ''
   };
 }
 
 const rules = ref<FormRules>({
-  orgTags: defaultRequiredRule
+  orgTags: defaultRequiredRule,
+  reason: defaultRequiredRule
 });
 
 const privateOrgTag = ref<string[]>([]);
@@ -50,7 +56,7 @@ async function handleSubmit() {
   model.value.orgTags = Array.from(new Set([...model.value.orgTags, ...privateOrgTag.value]));
   const res = await request({
     method: 'PUT',
-    url: `/admin/users/${props.rowData.userId}/org-tags`,
+    url: `/admin/organization-management/users/${props.rowData.userId}/memberships`,
     data: model.value
   });
   if (!res.error) {
@@ -73,18 +79,24 @@ watch(visible, () => {
   <NModal
     v-model:show="visible"
     preset="dialog"
-    title="组织标签设置"
+    title="组织成员设置"
     :show-icon="false"
     :mask-closable="false"
     class="w-500px!"
     @positive-click="handleSubmit"
   >
     <NForm ref="formRef" :model="model" :rules="rules" label-placement="left" :label-width="100" mt-10>
-      <NFormItem label="用户名" path="username">
-        <NInput :value="rowData.username" readonly />
+      <NFormItem label="用户">
+        <NInput :value="`${rowData.displayName || rowData.username}（${rowData.username}）`" readonly />
       </NFormItem>
-      <NFormItem label="组织标签" path="orgTags">
-        <OrgTagCascader v-model:value="model.orgTags" multiple exclude-private />
+      <NFormItem label="所属组织" path="orgTags">
+        <OrgTagCascader v-model:value="model.orgTags" multiple exclude-private :exclude-admin="!authStore.isSuperAdmin" />
+      </NFormItem>
+      <NFormItem label="变更原因" path="reason">
+        <NInput v-model:value="model.reason" type="textarea" maxlength="200" show-count placeholder="请输入本次变更原因" />
+      </NFormItem>
+      <NFormItem v-if="rowData.role !== 'USER' || model.orgTags.includes('admin')" label="当前密码" path="currentPassword">
+        <NInput v-model:value="model.currentPassword" type="password" show-password-on="click" placeholder="管理员权限变更需要验证身份" />
       </NFormItem>
     </NForm>
     <template #action>

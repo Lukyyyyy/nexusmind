@@ -174,9 +174,11 @@ const routeMap: RouteMap = {
   "model-config": "/model-config",
   "observability": "/observability",
   "org-tag": "/org-tag",
+  "organization": "/organization",
   "organization-graph": "/organization-graph",
   "personal-center": "/personal-center",
-  "user": "/user"
+  "user": "/user",
+  "verify-email": "/verify-email"
 };
 
 /**

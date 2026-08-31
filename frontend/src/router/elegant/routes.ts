@@ -126,7 +126,18 @@ export const generatedRoutes: GeneratedRoute[] = [
       title: 'org-tag',
       i18nKey: 'route.org-tag',
       icon: 'solar:tag-line-duotone',
-      roles: ['ADMIN'],
+      roles: ['ADMIN', 'SUPER_ADMIN'],
+      order: 5
+    }
+  },
+  {
+    name: 'organization',
+    path: '/organization',
+    component: 'layout.base$view.organization',
+    meta: {
+      title: 'organization',
+      i18nKey: 'route.organization',
+      icon: 'solar:buildings-2-line-duotone',
       order: 5
     }
   },
@@ -160,8 +171,19 @@ export const generatedRoutes: GeneratedRoute[] = [
       title: 'user',
       i18nKey: 'route.user',
       icon: 'solar:user-line-duotone',
-      roles: ['ADMIN'],
+      roles: ['ADMIN', 'SUPER_ADMIN'],
       order: 6
+    }
+  },
+  {
+    name: 'verify-email',
+    path: '/verify-email',
+    component: 'layout.blank$view.verify-email',
+    meta: {
+      title: 'verify-email',
+      constant: true,
+      hideInMenu: true,
+      i18nKey: 'route.verify-email'
     }
   }
 ];

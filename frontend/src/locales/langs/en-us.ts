@@ -166,11 +166,13 @@ const local: App.I18n.Schema = {
     'chat-history': 'Chat Audit',
     'knowledge-base': 'Knowledge Base',
     'organization-graph': 'Organization Graph',
-    'org-tag': 'Organization Tag',
+    'org-tag': 'Organization Management',
+    organization: 'Organization Relationships',
     'model-config': 'Model Config',
     observability: 'Observability',
     user: 'User Management',
-    'personal-center': 'Personal Center'
+    'personal-center': 'Personal Center',
+    'verify-email': 'Verify Email'
   },
   page: {
     login: {
@@ -226,7 +228,7 @@ const local: App.I18n.Schema = {
     required: 'Cannot be empty',
     userName: {
       required: 'Please enter user name',
-      invalid: 'User name format is incorrect'
+      invalid: '4-32 letters, numbers, underscores, or hyphens'
     },
     phone: {
       required: 'Please enter phone number',
@@ -234,7 +236,7 @@ const local: App.I18n.Schema = {
     },
     pwd: {
       required: 'Please enter password',
-      invalid: '6-18 characters, including letters, numbers, and underscores'
+      invalid: 'Use 8-72 characters without control characters'
     },
     confirmPwd: {
       required: 'Please enter password again',
