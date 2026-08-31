@@ -19,6 +19,10 @@ const overview = ref<Api.ModelConfig.Overview | null>(null);
 const selectedLlmConfigId = ref<number | null>(null);
 const selectedEmbeddingConfigId = ref<number | null>(null);
 const selectedGraphExtractionConfigId = ref<number | null>(null);
+const selectedRerankConfigId = ref<number | null>(null);
+const activeTab = ref<Api.ModelConfig.ModelType>('LLM');
+const rerankWindowMin = ref(10);
+const rerankWindowMax = ref(30);
 
 const emptyForm = (): Api.ModelConfig.Request => ({
   ownerType: 'USER',
@@ -35,7 +39,10 @@ const emptyForm = (): Api.ModelConfig.Request => ({
   maxTokens: 2000,
   dimension: 2048,
   batchSize: 10,
-  maxConcurrency: 10
+  maxConcurrency: 10,
+  instruct: null,
+  topN: null,
+  fps: null
 });
 
 const formModel = ref<Api.ModelConfig.Request>(emptyForm());
@@ -44,6 +51,7 @@ const isAdmin = computed(() => Boolean(overview.value?.admin));
 const configs = computed(() => overview.value?.configs || []);
 const llmConfigs = computed(() => configs.value.filter(item => item.modelType === 'LLM'));
 const embeddingConfigs = computed(() => configs.value.filter(item => item.modelType === 'EMBEDDING'));
+const rerankConfigs = computed(() => configs.value.filter(item => item.modelType === 'RERANK'));
 const selectableLlmOptions = computed(() =>
   llmConfigs.value
     .filter(item => item.enabled)
@@ -54,6 +62,16 @@ const selectableEmbeddingOptions = computed(() =>
     .filter(item => item.enabled)
     .map(item => ({ label: optionLabel(item), value: item.id }))
 );
+const selectableRerankOptions = computed(() =>
+  rerankConfigs.value
+    .filter(item => item.enabled)
+    .map(item => ({ label: optionLabel(item), value: item.id }))
+);
+const tabMeta: Record<Api.ModelConfig.ModelType, { tab: string; add: string }> = {
+  LLM: { tab: 'LLM', add: '新增 LLM' },
+  EMBEDDING: { tab: '向量化模型', add: '新增向量化模型' },
+  RERANK: { tab: 'Rerank 模型', add: '新增 Rerank 模型' }
+};
 const preferenceReady = computed(() => selectedLlmConfigId.value != null && selectedEmbeddingConfigId.value != null);
 
 const ownerTypeOptions = computed(() => {
@@ -65,8 +83,30 @@ const ownerTypeOptions = computed(() => {
 const rules: FormRules = {
   name: { required: true, message: '请输入配置名称', trigger: 'blur' },
   baseUrl: { required: true, message: '请输入 Base URL', trigger: 'blur' },
-  modelName: { required: true, message: '请输入模型名称', trigger: 'blur' }
+  modelName: { required: true, message: '请输入模型名称', trigger: 'blur' },
+  topN: [
+    {
+      validator: (_rule, value) => {
+        if (formModel.value.modelType !== 'RERANK' || value == null) return true;
+        if (value < rerankWindowMin.value) {
+          return new Error(`重排窗口不能小于最终返回条数 topK（${rerankWindowMin.value}），否则无法覆盖全部返回结果`);
+        }
+        if (value > rerankWindowMax.value) {
+          return new Error(`重排窗口不能超过全局融合窗口（${rerankWindowMax.value}）`);
+        }
+        return true;
+      },
+      trigger: ['blur', 'change']
+    }
+  ]
 };
+
+const rerankWindowInvalid = computed(
+  () =>
+    formModel.value.modelType === 'RERANK' &&
+    formModel.value.topN != null &&
+    (formModel.value.topN < rerankWindowMin.value || formModel.value.topN > rerankWindowMax.value)
+);
 
 const columns: DataTableColumns<Api.ModelConfig.Item> = [
   {
@@ -90,7 +130,19 @@ const columns: DataTableColumns<Api.ModelConfig.Item> = [
     key: 'baseUrl',
     title: 'Base URL',
     minWidth: 220,
-    ellipsis: { tooltip: true }
+    render: row => (
+      <div class="min-w-0 flex items-center gap-8px">
+        <NTooltip>
+          {{
+            trigger: () => <span class="min-w-0 flex-1 truncate">{row.baseUrl}</span>,
+            default: () => row.baseUrl
+          }}
+        </NTooltip>
+        <NButton quaternary circle size="tiny" aria-label="复制 Base URL" onClick={() => handleCopyBaseUrl(row.baseUrl)}>
+          <SvgIcon icon="material-symbols:content-copy-outline-rounded" class="text-16px" />
+        </NButton>
+      </div>
+    )
   },
   {
     key: 'status',
@@ -110,7 +162,10 @@ const columns: DataTableColumns<Api.ModelConfig.Item> = [
     render: row =>
       row.modelType === 'LLM'
         ? `temp ${row.temperature ?? '-'} / top_p ${row.topP ?? '-'} / max ${row.maxTokens ?? '-'}`
-        : `维度 ${row.dimension ?? 2048} / batch ${row.batchSize ?? '-'} / 并发 ${row.maxConcurrency ?? '-'}`
+        : row.modelType === 'EMBEDDING'
+          ? `维度 ${row.dimension ?? 2048} / batch ${row.batchSize ?? '-'} / 并发 ${row.maxConcurrency ?? '-'}`
+          : `窗口 ${row.topN ?? '全局 30'}${row.fps != null ? ` / fps ${row.fps}` : ''}${
+              row.instruct ? ' / 自定义指令' : ''}`
   },
   {
     key: 'operate',
@@ -157,6 +212,11 @@ function canDelete(item: Api.ModelConfig.Item) {
   return canManage(item);
 }
 
+function handleCopyBaseUrl(baseUrl: string) {
+  navigator.clipboard.writeText(baseUrl);
+  window.$message?.success('Base URL 已复制');
+}
+
 async function loadData() {
   loading.value = true;
   const { data, error } = await fetchModelConfigOverview();
@@ -165,6 +225,9 @@ async function loadData() {
     selectedLlmConfigId.value = data.selectedLlmConfigId;
     selectedEmbeddingConfigId.value = data.selectedEmbeddingConfigId;
     selectedGraphExtractionConfigId.value = data.selectedGraphExtractionConfigId;
+    selectedRerankConfigId.value = data.selectedRerankConfigId;
+    rerankWindowMin.value = data.rerankWindowMin ?? 10;
+    rerankWindowMax.value = data.rerankWindowMax ?? 30;
   }
   loading.value = false;
 }
@@ -178,7 +241,8 @@ async function savePreference() {
   const { error } = await updateModelPreference({
     llmConfigId: selectedLlmConfigId.value,
     embeddingConfigId: selectedEmbeddingConfigId.value,
-    graphExtractionConfigId: selectedGraphExtractionConfigId.value
+    graphExtractionConfigId: selectedGraphExtractionConfigId.value,
+    rerankConfigId: selectedRerankConfigId.value
   });
   if (!error) {
     window.$message?.success('当前模型已更新');
@@ -193,7 +257,7 @@ function openCreate(modelType: Api.ModelConfig.ModelType) {
     ...emptyForm(),
     ownerType: isAdmin.value ? 'SYSTEM' : 'USER',
     modelType,
-    dimension: 2048,
+    dimension: modelType === 'EMBEDDING' ? 2048 : null,
     temperature: modelType === 'LLM' ? 0.3 : null,
     topP: modelType === 'LLM' ? 0.9 : null,
     maxTokens: modelType === 'LLM' ? 2000 : null
@@ -222,7 +286,10 @@ function openEdit(row: Api.ModelConfig.Item) {
     maxTokens: row.maxTokens,
     dimension: row.dimension ?? 2048,
     batchSize: row.batchSize,
-    maxConcurrency: row.maxConcurrency
+    maxConcurrency: row.maxConcurrency,
+    instruct: row.instruct,
+    topN: row.topN,
+    fps: row.fps
   };
   modalVisible.value = true;
 }
@@ -260,7 +327,10 @@ function normalizePayload(value: Api.ModelConfig.Request): Api.ModelConfig.Reque
     maxConcurrency: value.modelType === 'EMBEDDING' ? value.maxConcurrency : null,
     temperature: value.modelType === 'LLM' ? value.temperature : null,
     topP: value.modelType === 'LLM' ? value.topP : null,
-    maxTokens: value.modelType === 'LLM' ? value.maxTokens : null
+    maxTokens: value.modelType === 'LLM' ? value.maxTokens : null,
+    instruct: value.modelType === 'RERANK' ? value.instruct : null,
+    topN: value.modelType === 'RERANK' ? value.topN : null,
+    fps: value.modelType === 'RERANK' ? value.fps : null
   };
 }
 
@@ -275,9 +345,9 @@ onMounted(loadData);
 </script>
 
 <template>
-  <div class="min-h-500px flex-col-stretch gap-16px overflow-hidden lt-sm:overflow-auto">
+  <div class="min-h-500px flex-col-stretch gap-16px overflow-y-auto">
     <NCard title="当前使用" :bordered="false" size="small" class="card-wrapper">
-      <div class="grid grid-cols-1 gap-16px lg:grid-cols-[1fr_1fr_1fr_auto] lg:items-end">
+      <div class="grid grid-cols-1 gap-16px md:grid-cols-2 xl:grid-cols-[repeat(4,minmax(0,1fr))_auto] xl:items-end">
         <div>
           <div class="mb-6px text-14px font-medium lh-22px">LLM</div>
           <NSelect v-model:value="selectedLlmConfigId" :options="selectableLlmOptions" placeholder="请选择 LLM" />
@@ -299,56 +369,62 @@ onMounted(loadData);
             placeholder="请选择向量化模型"
           />
         </div>
+        <div>
+          <div class="mb-6px text-14px font-medium lh-22px">Rerank 模型</div>
+          <NSelect
+            v-model:value="selectedRerankConfigId"
+            :options="selectableRerankOptions"
+            clearable
+            placeholder="跟随系统默认"
+          />
+        </div>
         <div class="flex">
           <NButton type="primary" :loading="saving" @click="savePreference">保存</NButton>
         </div>
       </div>
     </NCard>
 
-    <NCard title="LLM 配置" :bordered="false" size="small" class="card-wrapper">
+    <NCard title="模型配置" :bordered="false" size="small" class="card-wrapper">
       <template #header-extra>
-        <NTooltip>
-          <template #trigger>
-            <NButton type="primary" size="small" circle aria-label="新增 LLM" @click="openCreate('LLM')">
-              <template #icon>
-                <SvgIcon icon="material-symbols:add-rounded" class="text-18px" />
-              </template>
-            </NButton>
-          </template>
-          新增 LLM
-        </NTooltip>
+        <NButton type="primary" size="small" @click="openCreate(activeTab)">
+          {{ tabMeta[activeTab].add }}
+        </NButton>
       </template>
-      <NDataTable
-        :columns="columns"
-        :data="llmConfigs"
-        size="small"
-        :loading="loading"
-        :row-key="row => row.id"
-        :scroll-x="900"
-      />
-    </NCard>
-
-    <NCard title="向量化模型配置" :bordered="false" size="small" class="card-wrapper">
-      <template #header-extra>
-        <NTooltip>
-          <template #trigger>
-            <NButton type="primary" size="small" circle aria-label="新增向量化模型" @click="openCreate('EMBEDDING')">
-              <template #icon>
-                <SvgIcon icon="material-symbols:add-rounded" class="text-18px" />
-              </template>
-            </NButton>
-          </template>
-          新增向量化模型
-        </NTooltip>
-      </template>
-      <NDataTable
-        :columns="columns"
-        :data="embeddingConfigs"
-        size="small"
-        :loading="loading"
-        :row-key="row => row.id"
-        :scroll-x="900"
-      />
+      <NTabs v-model:value="activeTab" type="line" animated>
+        <NTabPane name="LLM" :tab="tabMeta.LLM.tab">
+          <NDataTable
+            :columns="columns"
+            :data="llmConfigs"
+            size="small"
+            :loading="loading"
+            :row-key="row => row.id"
+            :scroll-x="900"
+            table-layout="fixed"
+          />
+        </NTabPane>
+        <NTabPane name="EMBEDDING" :tab="tabMeta.EMBEDDING.tab">
+          <NDataTable
+            :columns="columns"
+            :data="embeddingConfigs"
+            size="small"
+            :loading="loading"
+            :row-key="row => row.id"
+            :scroll-x="900"
+            table-layout="fixed"
+          />
+        </NTabPane>
+        <NTabPane name="RERANK" :tab="tabMeta.RERANK.tab">
+          <NDataTable
+            :columns="columns"
+            :data="rerankConfigs"
+            size="small"
+            :loading="loading"
+            :row-key="row => row.id"
+            :scroll-x="900"
+            table-layout="fixed"
+          />
+        </NTabPane>
+      </NTabs>
     </NCard>
 
     <NModal v-model:show="modalVisible" preset="card" :title="editingId ? '编辑模型配置' : '新增模型配置'" class="max-w-720px">
@@ -369,12 +445,18 @@ onMounted(loadData);
               :disabled="Boolean(editingId)"
               :options="[
                 { label: 'LLM', value: 'LLM' },
-                { label: '向量化模型', value: 'EMBEDDING' }
+                { label: '向量化模型', value: 'EMBEDDING' },
+                { label: 'Rerank 模型', value: 'RERANK' }
               ]"
             />
           </NFormItem>
           <NFormItem label="Base URL" path="baseUrl">
-            <NInput v-model:value="formModel.baseUrl" placeholder="https://api.example.com/v1" />
+            <NInput
+              v-model:value="formModel.baseUrl"
+              :placeholder="formModel.modelType === 'RERANK'
+                ? 'https://dashscope.aliyuncs.com（自动拼接 rerank 接口路径）'
+                : 'https://api.example.com/v1'"
+            />
           </NFormItem>
           <NFormItem label="API Key">
             <NInput
@@ -385,7 +467,7 @@ onMounted(loadData);
             />
           </NFormItem>
           <NFormItem label="模型名称" path="modelName">
-            <NInput v-model:value="formModel.modelName" placeholder="deepseek-chat / text-embedding-v4" />
+            <NInput v-model:value="formModel.modelName" placeholder="deepseek-chat / text-embedding-v4 / qwen3-vl-rerank" />
           </NFormItem>
           <NFormItem label="启用">
             <NSwitch v-model:value="formModel.enabled" />
@@ -394,33 +476,182 @@ onMounted(loadData);
             <NSwitch v-model:value="formModel.defaultModel" />
           </NFormItem>
           <template v-if="formModel.modelType === 'LLM'">
-            <NFormItem label="Temperature">
+            <NFormItem>
+              <template #label>
+                <span class="inline-flex items-center gap-4px">
+                  Temperature
+                  <NTooltip>
+                    <template #trigger>
+                      <button
+                        type="button"
+                        class="inline-flex cursor-help border-0 bg-transparent p-0 text-#8a8f99"
+                        aria-label="Temperature：控制回答的随机性。值越低越稳定，值越高越多样。"
+                      >
+                        <SvgIcon icon="material-symbols:help-outline-rounded" class="text-16px" />
+                      </button>
+                    </template>
+                    <span class="block max-w-280px">控制回答的随机性。值越低越稳定一致，值越高越多样、有创造性。</span>
+                  </NTooltip>
+                </span>
+              </template>
               <NInputNumber v-model:value="formModel.temperature" :min="0" :max="2" :step="0.1" class="w-full" />
             </NFormItem>
-            <NFormItem label="Top P">
+            <NFormItem>
+              <template #label>
+                <span class="inline-flex items-center gap-4px">
+                  Top P
+                  <NTooltip>
+                    <template #trigger>
+                      <button
+                        type="button"
+                        class="inline-flex cursor-help border-0 bg-transparent p-0 text-#8a8f99"
+                        aria-label="Top P：限制模型从累计概率达到该值的候选词中采样。值越低越聚焦。"
+                      >
+                        <SvgIcon icon="material-symbols:help-outline-rounded" class="text-16px" />
+                      </button>
+                    </template>
+                    <span class="block max-w-280px">限制候选词的采样范围。值越低回答越聚焦，通常不建议与 Temperature 同时大幅调整。</span>
+                  </NTooltip>
+                </span>
+              </template>
               <NInputNumber v-model:value="formModel.topP" :min="0" :max="1" :step="0.05" class="w-full" />
             </NFormItem>
-            <NFormItem label="Max Tokens">
+            <NFormItem>
+              <template #label>
+                <span class="inline-flex items-center gap-4px">
+                  Max Tokens
+                  <NTooltip>
+                    <template #trigger>
+                      <button
+                        type="button"
+                        class="inline-flex cursor-help border-0 bg-transparent p-0 text-#8a8f99"
+                        aria-label="Max Tokens：限制单次回答最多生成的 Token 数量，不等同于字符数。"
+                      >
+                        <SvgIcon icon="material-symbols:help-outline-rounded" class="text-16px" />
+                      </button>
+                    </template>
+                    <span class="block max-w-280px">限制单次回答最多生成的 Token 数量，不等同于字符数。值越大，回答可更长但耗时和费用可能增加。</span>
+                  </NTooltip>
+                </span>
+              </template>
               <NInputNumber v-model:value="formModel.maxTokens" :min="1" :step="100" class="w-full" />
             </NFormItem>
           </template>
-          <template v-else>
+          <template v-else-if="formModel.modelType === 'EMBEDDING'">
             <NFormItem label="向量维度">
               <NInputNumber v-model:value="formModel.dimension" :disabled="true" class="w-full" />
             </NFormItem>
             <NFormItem label="Batch Size">
-              <NInputNumber v-model:value="formModel.batchSize" :min="1" :step="1" class="w-full" />
+              <NInputNumber v-model:value="formModel.batchSize" :min="1" :max="10" :step="1" class="w-full" />
             </NFormItem>
             <NFormItem label="最大并发">
-              <NInputNumber v-model:value="formModel.maxConcurrency" :min="1" :step="1" class="w-full" />
+              <NInputNumber v-model:value="formModel.maxConcurrency" :min="1" :max="30" :step="1" class="w-full" />
+            </NFormItem>
+          </template>
+          <template v-else-if="formModel.modelType === 'RERANK'">
+            <NFormItem class="md:col-span-2">
+              <template #label>
+                <span class="inline-flex items-center gap-4px">
+                  排序指令（Instruct，可选）
+                  <NTooltip>
+                    <template #trigger>
+                      <button
+                        type="button"
+                        class="inline-flex cursor-help border-0 bg-transparent p-0 text-#8a8f99"
+                        aria-label="排序指令：自定义重排任务说明，建议英文。留空使用服务端默认指令。"
+                      >
+                        <SvgIcon icon="material-symbols:help-outline-rounded" class="text-16px" />
+                      </button>
+                    </template>
+                    <span class="block max-w-320px">
+                      自定义重排任务说明，建议英文。留空使用服务端默认指令（给定检索查询，召回能回答该查询的段落）。
+                      仅当模型支持 instruct 参数时才下发，换模型不会因该字段报错。
+                    </span>
+                  </NTooltip>
+                </span>
+              </template>
+              <NInput
+                v-model:value="formModel.instruct"
+                type="textarea"
+                :rows="2"
+                :maxlength="2000"
+                placeholder="例如：Given a customer service question, retrieve the most relevant policy clauses."
+              />
+            </NFormItem>
+            <NFormItem path="topN">
+              <template #label>
+                <span class="inline-flex items-center gap-4px">
+                  重排窗口 top_n（可选）
+                  <NTooltip>
+                    <template #trigger>
+                      <button
+                        type="button"
+                        class="inline-flex cursor-help border-0 bg-transparent p-0 text-#8a8f99"
+                        aria-label="重排窗口：送入重排模型的候选条数，范围 topK 到全局融合窗口之间，留空使用全局默认。"
+                      >
+                        <SvgIcon icon="material-symbols:help-outline-rounded" class="text-16px" />
+                      </button>
+                    </template>
+                    <span class="block max-w-320px">
+                      该模型的候选窗口：送入重排模型的候选条数，最终返回条数仍由系统按场景截断（如聊天取前
+                      {{ rerankWindowMin }}）。下限为 topK（{{ rerankWindowMin }}）——小于它重排无法覆盖全部返回结果；
+                      上限为全局融合窗口（{{ rerankWindowMax }}）。留空使用全局默认 {{ rerankWindowMax }}。
+                    </span>
+                  </NTooltip>
+                </span>
+              </template>
+              <NInputNumber
+                v-model:value="formModel.topN"
+                :min="rerankWindowMin"
+                :max="rerankWindowMax"
+                :step="1"
+                class="w-full"
+                :placeholder="`留空 = 全局窗口 ${rerankWindowMax}`"
+                clearable
+              />
+            </NFormItem>
+            <NFormItem>
+              <template #label>
+                <span class="inline-flex items-center gap-4px">
+                  fps（可选）
+                  <NTooltip>
+                    <template #trigger>
+                      <button
+                        type="button"
+                        class="inline-flex cursor-help border-0 bg-transparent p-0 text-#8a8f99"
+                        aria-label="fps：视频抽帧比例 0~1，仅重排视频文档时生效。"
+                      >
+                        <SvgIcon icon="material-symbols:help-outline-rounded" class="text-16px" />
+                      </button>
+                    </template>
+                    <span class="block max-w-320px">
+                      视频抽帧比例（0~1），越小抽取帧数越少。仅重排视频文档时生效，纯文本检索不会下发该参数。
+                    </span>
+                  </NTooltip>
+                </span>
+              </template>
+              <NInputNumber
+                v-model:value="formModel.fps"
+                :min="0"
+                :max="1"
+                :step="0.1"
+                class="w-full"
+                placeholder="默认 1.0"
+                clearable
+              />
             </NFormItem>
           </template>
         </div>
       </NForm>
       <template #footer>
-        <div class="flex justify-end gap-12px">
+        <div class="flex items-center justify-end gap-12px">
+          <span v-if="rerankWindowInvalid" class="text-12px text-error">
+            重排窗口需在 {{ rerankWindowMin }} ~ {{ rerankWindowMax }} 之间（下限为最终返回条数 topK）
+          </span>
           <NButton @click="modalVisible = false">取消</NButton>
-          <NButton type="primary" :loading="saving" @click="handleSubmit">保存</NButton>
+          <NButton type="primary" :disabled="rerankWindowInvalid" :loading="saving" @click="handleSubmit">
+            保存
+          </NButton>
         </div>
       </template>
     </NModal>

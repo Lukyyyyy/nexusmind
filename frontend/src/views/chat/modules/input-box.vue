@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { NScrollbar } from 'naive-ui';
 import { VueMarkdownItProvider } from 'vue-markdown-shiki';
+import { fetchModelConfigOverview, updateModelPreference } from '@/service/api';
 import ChatMessage from './chat-message.vue';
 import ScopeSelector from './scope-selector.vue';
 
@@ -34,6 +35,21 @@ const sendable = computed(
 const inputRef = ref<HTMLTextAreaElement>();
 const inputMinHeight = 24;
 const inputMaxHeight = 200;
+const modelOverview = ref<Api.ModelConfig.Overview | null>(null);
+const switchingModel = ref(false);
+
+const llmConfigs = computed(() =>
+  (modelOverview.value?.configs || []).filter(config => config.modelType === 'LLM' && config.enabled)
+);
+const currentModel = computed(() =>
+  llmConfigs.value.find(config => config.id === modelOverview.value?.selectedLlmConfigId)
+);
+const modelOptions = computed(() =>
+  llmConfigs.value.map(config => ({
+    label: config.modelName,
+    key: config.id
+  }))
+);
 
 const suggestions = [
   '知识库中有哪些文档？',
@@ -45,6 +61,33 @@ let websocketOpened = false;
 function useSuggestion(suggestion: string) {
   input.value.message = suggestion;
   nextTick(() => inputRef.value?.focus());
+}
+
+async function loadModels() {
+  const { data, error } = await fetchModelConfigOverview();
+  if (!error) modelOverview.value = data;
+}
+
+async function switchModel(modelId: number) {
+  const overview = modelOverview.value;
+  if (!overview || modelId === overview.selectedLlmConfigId || switchingModel.value) return;
+  if (overview.selectedEmbeddingConfigId == null) {
+    window.$message?.warning('请先在模型配置中选择向量化模型');
+    return;
+  }
+
+  switchingModel.value = true;
+  const { error } = await updateModelPreference({
+    llmConfigId: modelId,
+    embeddingConfigId: overview.selectedEmbeddingConfigId,
+    graphExtractionConfigId: overview.selectedGraphExtractionConfigId,
+    rerankConfigId: overview.selectedRerankConfigId
+  });
+  if (!error) {
+    overview.selectedLlmConfigId = modelId;
+    window.$message?.success(`已切换至 ${currentModel.value?.modelName || '新模型'}`);
+  }
+  switchingModel.value = false;
 }
 
 const scrollbarContentStyle = computed(() => ({
@@ -122,6 +165,7 @@ watch(wsData, val => {
       finishThinking(assistant);
       assistant.status = 'error';
     }
+    window.$message?.error(data.error);
   } else if (data.chunk) {
     if (!assistant) return;
     finishThinking(assistant);
@@ -233,6 +277,7 @@ const handShortcut = (e: KeyboardEvent) => {
 };
 
 onMounted(() => {
+  loadModels();
   chatStore.scrollToBottom = scrollToBottom;
   resizeInput();
   inputDockResizeObserver = new ResizeObserver(updateInputDockHeight);
@@ -303,18 +348,38 @@ onUnmounted(() => {
         />
         <div class="chat-input__toolbar">
           <div class="chat-input__tools"><ScopeSelector /></div>
-          <NButton
-            :disabled="sendable"
-            strong
-            circle
-            type="primary"
-            class="chat-input__send"
-            :aria-label="isSending ? '停止生成' : '发送消息'"
-            @click="handleSend"
-          >
-            <icon-material-symbols:stop-rounded v-if="isSending" />
-            <icon-guidance:send v-else />
-          </NButton>
+          <div class="chat-input__actions">
+            <NDropdown
+              trigger="click"
+              placement="top-end"
+              :options="modelOptions"
+              :disabled="switchingModel || isSending || !modelOptions.length"
+              @select="switchModel"
+            >
+              <button
+                type="button"
+                class="chat-input__model"
+                :disabled="switchingModel || isSending || !modelOptions.length"
+                :title="currentModel?.modelName || '选择模型'"
+                :aria-label="`当前模型：${currentModel?.modelName || '未配置'}，点击切换`"
+              >
+                <span>{{ currentModel?.modelName || '选择模型' }}</span>
+                <icon-material-symbols:keyboard-arrow-down-rounded />
+              </button>
+            </NDropdown>
+            <NButton
+              :disabled="sendable"
+              strong
+              circle
+              type="primary"
+              class="chat-input__send"
+              :aria-label="isSending ? '停止生成' : '发送消息'"
+              @click="handleSend"
+            >
+              <icon-material-symbols:stop-rounded v-if="isSending" />
+              <icon-material-symbols:arrow-upward-rounded v-else class="text-22px" />
+            </NButton>
+          </div>
         </div>
       </div>
       <p class="pointer-events-none mt-3 text-center text-13px color-#9ca3af dark:color-#6b7280">
@@ -327,7 +392,7 @@ onUnmounted(() => {
 <style scoped lang="scss">
 .chat-input-dock {
   isolation: isolate;
-  background: linear-gradient(to bottom, rgb(247 249 252 / 0%), #f7f9fc 28%, #f7f9fc 100%);
+  background: linear-gradient(to bottom, rgb(255 255 255 / 0%), #fff 28%, #fff 100%);
 
   &::before {
     content: '';
@@ -420,6 +485,52 @@ onUnmounted(() => {
   min-width: 1px;
 }
 
+.chat-input__actions,
+.chat-input__model {
+  display: flex;
+  align-items: center;
+}
+
+.chat-input__actions {
+  min-width: 0;
+  gap: 8px;
+}
+
+.chat-input__model {
+  max-width: 220px;
+  gap: 5px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  padding: 6px 7px;
+  color: #4b5563;
+  cursor: pointer;
+}
+
+.chat-input__model:hover {
+  background: #f3f4f6;
+  color: #245bdb;
+}
+
+.chat-input__model:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.chat-input__model span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:global(.dark) .chat-input__model {
+  color: #c8d0db;
+}
+
+:global(.dark) .chat-input__model:hover {
+  background: #252c35;
+}
+
 .chat-input__send {
   flex-shrink: 0;
   --n-width: 40px !important;
@@ -430,7 +541,7 @@ onUnmounted(() => {
 }
 
 .chat-workspace {
-  background: #f7f9fc;
+  background: #fff;
 }
 
 .chat-toolbar {
@@ -544,6 +655,10 @@ onUnmounted(() => {
   .chat-input {
     min-height: 104px;
     border-radius: 14px;
+  }
+
+  .chat-input__model {
+    max-width: 120px;
   }
 
   .chat-empty { min-height: calc(100vh - 330px); padding-inline: 8px; }
