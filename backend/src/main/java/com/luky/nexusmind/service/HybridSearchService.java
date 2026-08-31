@@ -2,7 +2,12 @@ package com.luky.nexusmind.service;
 
 import co.elastic.clients.elasticsearch.ElasticsearchClient;
 import co.elastic.clients.elasticsearch.core.SearchResponse;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.luky.nexusmind.client.EmbeddingClient;
+import com.luky.nexusmind.client.RerankClient;
 import com.luky.nexusmind.entity.EsDocument;
 import com.luky.nexusmind.entity.SearchResult;
 import com.luky.nexusmind.model.User;
@@ -13,17 +18,24 @@ import com.luky.nexusmind.model.FileUpload;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import co.elastic.clients.elasticsearch._types.query_dsl.Operator;
 import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import co.elastic.clients.elasticsearch._types.FieldValue;
 
+import java.io.IOException;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.ArrayList;
 import java.util.Set;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 /**
@@ -53,6 +65,33 @@ public class HybridSearchService {
     @Autowired
     private FileUploadRepository fileUploadRepository;
 
+    @Autowired
+    private RerankClient rerankClient;
+
+    @Autowired
+    private ModelConfigService modelConfigService;
+
+    @Autowired
+    private AiTraceService aiTraceService;
+
+    @Value("${ai.retrieval.fusion-mode:rrf}")
+    private String fusionMode;
+
+    @Value("${ai.retrieval.rrf-k:60}")
+    private int rrfK;
+
+    @Value("${ai.retrieval.rank-window:60}")
+    private int rankWindow;
+
+    @Value("${ai.retrieval.rerank-enabled:true}")
+    private boolean rerankEnabled;
+
+    @Value("${ai.retrieval.rerank-top-n:30}")
+    private int rerankTopN;
+
+    /** RRF 双路召回并行执行器（daemon 线程，不阻塞 JVM 退出） */
+    private static final ExecutorService SEARCH_BRANCH_EXECUTOR = Executors.newWorkStealingPool();
+
     /**
      * 使用文本匹配和向量相似度进行混合搜索，支持权限过滤
      * 该方法确保用户只能搜索其有权限访问的文档（自己的文档、公开文档、所属组织的文档）
@@ -72,6 +111,13 @@ public class HybridSearchService {
 
         if (scopeFileMd5s != null && scopeFileMd5s.isEmpty()) return List.of();
 
+        AiTraceService.TraceSpan span = aiTraceService.startSpan("rag.hybrid_search", userId, null, null)
+                .attribute("nexusmind.search.top_k", topK)
+                .attribute("nexusmind.search.query.length", query != null ? query.length() : 0);
+        if (aiTraceService.shouldCaptureContent()) {
+            span.attribute("input.value", abbreviate(query, 2000))
+                    .attribute("langfuse.observation.input", abbreviate(query, 2000));
+        }
         try {
             // 获取用户有效的组织标签（包含层级关系）
             List<String> userEffectiveTags = getUserEffectiveOrgTags(userId);
@@ -82,105 +128,156 @@ public class HybridSearchService {
             boolean administrator = isAdministrator(userId);
             logger.debug("用户 {} 的数据库ID: {}", userId, userDbId);
 
-            // 生成查询向量
-            final List<Float> queryVector = embedToVectorList(query, userId);
-
-            // 如果向量生成失败，仅使用文本匹配
-            if (queryVector == null) {
-                logger.warn("向量生成失败，仅使用文本匹配进行搜索");
-                return textOnlySearchWithPermission(
-                        query, userDbId, userEffectiveTags, administrator, topK, scopeFileMd5s);
+            List<SearchResult> results;
+            if ("legacy".equalsIgnoreCase(fusionMode)) {
+                span.attribute("nexusmind.search.fusion_mode", "legacy");
+                results = legacyHybridSearch(query, userId, userDbId, userEffectiveTags, administrator, topK,
+                        scopeFileMd5s, span);
+                attachSearchOutputContent(span, results);
+            } else {
+                results = rrfHybridSearch(query, userId, userEffectiveTags, administrator, topK, scopeFileMd5s, span);
             }
-
-            logger.debug("向量生成成功，开始执行混合搜索 KNN");
-
-            List<Query> retrievalFilters = new ArrayList<>();
-            retrievalFilters.add(buildPermissionQuery(userDbId, userEffectiveTags, administrator));
-            if (scopeFileMd5s != null) retrievalFilters.add(buildFileScopeQuery(scopeFileMd5s));
-
-            SearchResponse<EsDocument> response = esClient.search(s -> {
-                s.index("knowledge_base");
-                // KNN 召回
-                int recallK = topK * 30; // KNN 召回窗口
-                s.knn(kn -> kn
-                        .field("vector")
-                        .queryVector(queryVector)
-                        .k(recallK)
-                        .numCandidates(recallK)
-                        .filter(retrievalFilters));
-                // 必须命中关键词 + 权限过滤
-                s.query(q -> q.bool(b -> {
-                    b.must(mst -> mst.match(m -> m.field("textContent").query(query)))
-                            .filter(buildPermissionQuery(userDbId, userEffectiveTags, administrator));
-                    if (scopeFileMd5s != null) b.filter(buildFileScopeQuery(scopeFileMd5s));
-                    return b;
-                }));
-
-                // 第二阶段 BM25 rescore
-                s.rescore(r -> r
-                        .windowSize(recallK)
-                        .query(rq -> rq
-                                .queryWeight(0.2d) // 保留部分 KNN 分
-                                .rescoreQueryWeight(1.0d) // BM25 主导
-                                .query(rqq -> rqq.match(m -> m
-                                        .field("textContent")
-                                        .query(query)
-                                        .operator(Operator.And)))));
-                s.size(topK);
-                return s;
-            }, EsDocument.class);
-
-            logger.debug("Elasticsearch查询执行完成，命中数量: {}, 最大分数: {}",
-                    response.hits().total().value(), response.hits().maxScore());
-
-            List<SearchResult> results = response.hits().hits().stream()
-                    .map(hit -> {
-                        assert hit.source() != null;
-                        logger.debug("搜索结果 - 文件: {}, 块: {}, 分数: {}, 内容: {}",
-                                hit.source().getFileMd5(), hit.source().getChunkId(), hit.score(),
-                                hit.source().getTextContent().substring(0,
-                                        Math.min(50, hit.source().getTextContent().length())));
-                        return new SearchResult(
-                                hit.source().getFileMd5(),
-                                hit.source().getChunkId(),
-                                hit.source().getTextContent(),
-                                hit.score(),
-                                hit.source().getUserId(),
-                                hit.source().getOrgTag(),
-                                hit.source().isPublic());
-                    })
-                    .toList();
-
-            logger.debug("返回搜索结果数量: {}", results.size());
-            attachFileNames(results);
+            span.attribute("nexusmind.search.results.count", results.size());
             return results;
         } catch (Exception e) {
+            span.error(e);
             logger.error("带权限的搜索失败", e);
             // 发生异常时尝试使用纯文本搜索作为后备方案
             try {
                 logger.info("尝试使用纯文本搜索作为后备方案");
-                return textOnlySearchWithPermission(query, getUserDbId(userId), getUserEffectiveOrgTags(userId),
-                        isAdministrator(userId), topK, scopeFileMd5s);
+                List<SearchResult> results = textOnlySearchWithPermission(query, getUserDbId(userId),
+                        getUserEffectiveOrgTags(userId), isAdministrator(userId), topK, scopeFileMd5s, span);
+                span.attribute("nexusmind.search.degraded_to", "text_only");
+                span.attribute("nexusmind.search.results.count", results.size());
+                return results;
             } catch (Exception fallbackError) {
                 logger.error("后备搜索也失败", fallbackError);
                 return Collections.emptyList();
             }
+        } finally {
+            span.end();
+            span.close();
         }
     }
 
     /**
-     * 仅使用文本匹配的带权限搜索方法
+     * 旧版单请求融合（kNN ∪ BM25 + BM25 rescore），通过 ai.retrieval.fusion-mode=legacy 回退使用
      */
-    private List<SearchResult> textOnlySearchWithPermission(String query, String userDbId,
-            List<String> userEffectiveTags, boolean administrator, int topK) {
-        return textOnlySearchWithPermission(query, userDbId, userEffectiveTags, administrator, topK, null);
+    private List<SearchResult> legacyHybridSearch(String query, String userId, String userDbId,
+                                                  List<String> userEffectiveTags, boolean administrator,
+                                                  int topK, Set<String> scopeFileMd5s,
+                                                  AiTraceService.TraceSpan span) throws IOException {
+        // 生成查询向量
+        final List<Float> queryVector = embedToVectorList(query, userId);
+
+        if (queryVector == null) {
+            logger.warn("向量生成失败，仅使用文本匹配进行搜索");
+            span.attribute("nexusmind.search.vector_failed", true);
+            return textOnlySearchWithPermission(
+                    query, userDbId, userEffectiveTags, administrator, topK, scopeFileMd5s, span);
+        }
+
+        List<Query> retrievalFilters = new ArrayList<>();
+        retrievalFilters.add(buildPermissionQuery(userDbId, userEffectiveTags, administrator));
+        if (scopeFileMd5s != null) retrievalFilters.add(buildFileScopeQuery(scopeFileMd5s));
+
+        SearchResponse<EsDocument> response = esClient.search(s -> {
+            s.index("knowledge_base");
+            // KNN 召回
+            int recallK = topK * 30; // KNN 召回窗口
+            s.knn(kn -> kn
+                    .field("vector")
+                    .queryVector(queryVector)
+                    .k(recallK)
+                    .numCandidates(recallK)
+                    .filter(retrievalFilters));
+            // 必须命中关键词 + 权限过滤
+            s.query(q -> q.bool(b -> {
+                b.must(mst -> mst.match(m -> m.field("textContent").query(query)))
+                        .filter(buildPermissionQuery(userDbId, userEffectiveTags, administrator));
+                if (scopeFileMd5s != null) b.filter(buildFileScopeQuery(scopeFileMd5s));
+                return b;
+            }));
+
+            // 第二阶段 BM25 rescore
+            s.rescore(r -> r
+                    .windowSize(recallK)
+                    .query(rq -> rq
+                            .queryWeight(0.2d) // 保留部分 KNN 分
+                            .rescoreQueryWeight(1.0d) // BM25 主导
+                            .query(rqq -> rqq.match(m -> m
+                                    .field("textContent")
+                                    .query(query)
+                                    .operator(Operator.And)))));
+            s.size(topK);
+            return s;
+        }, EsDocument.class);
+
+        logger.debug("Elasticsearch查询执行完成，命中数量: {}, 最大分数: {}",
+                response.hits().total().value(), response.hits().maxScore());
+
+        List<SearchResult> results = toSearchResults(response);
+        logger.debug("返回搜索结果数量: {}", results.size());
+        attachFileNames(results);
+        return results;
+    }
+
+    /**
+     * RRF 管线：kNN 与 BM25 两路并行召回 -> Reciprocal Rank Fusion -> Rerank 重排 -> 截断 topK。
+     * 降级链：向量失败走纯文本；任一路召回失败用另一路；rerank 未配置/失败保持融合原序。
+     */
+    private List<SearchResult> rrfHybridSearch(String query, String userId, List<String> userEffectiveTags,
+                                               boolean administrator, int topK, Set<String> scopeFileMd5s,
+                                               AiTraceService.TraceSpan span) {
+        // 生成查询向量
+        final List<Float> queryVector = embedToVectorList(query, userId);
+
+        // 如果向量生成失败，仅使用文本匹配
+        if (queryVector == null) {
+            logger.warn("向量生成失败，仅使用文本匹配进行搜索");
+            span.attribute("nexusmind.search.vector_failed", true);
+            return textOnlySearchWithPermission(query, getUserDbId(userId), userEffectiveTags, administrator,
+                    topK, scopeFileMd5s, span);
+        }
+
+        String userDbId = getUserDbId(userId);
+        Query permission = buildPermissionQuery(userDbId, userEffectiveTags, administrator);
+        Query scopeFilter = scopeFileMd5s != null ? buildFileScopeQuery(scopeFileMd5s) : null;
+
+        CompletableFuture<List<SearchResult>> knnFuture = CompletableFuture.supplyAsync(
+                () -> knnRecall(queryVector, permission, scopeFilter), SEARCH_BRANCH_EXECUTOR);
+        CompletableFuture<List<SearchResult>> bm25Future = CompletableFuture.supplyAsync(
+                () -> bm25Recall(query, permission, scopeFilter), SEARCH_BRANCH_EXECUTOR);
+
+        List<SearchResult> knnHits = joinBranch("kNN", knnFuture);
+        List<SearchResult> bm25Hits = joinBranch("BM25", bm25Future);
+        span.attribute("nexusmind.search.knn_hits", knnHits.size())
+                .attribute("nexusmind.search.bm25_hits", bm25Hits.size());
+        if (knnHits.isEmpty() && bm25Hits.isEmpty()) {
+            return List.of();
+        }
+
+        RerankPlan plan = resolveRerankPlan(userId);
+        List<SearchResult> fused = RrfFuser.fuse(knnHits, bm25Hits, rrfK,
+                Math.max(topK, plan != null ? plan.window() : 0));
+        span.attribute("nexusmind.search.fused_count", fused.size())
+                .attribute("nexusmind.search.rrf_k", rrfK);
+        logger.debug("RRF 融合完成: kNN {} 条 + BM25 {} 条 -> {} 条", knnHits.size(), bm25Hits.size(), fused.size());
+
+        List<SearchResult> ranked = applyRerank(query, fused, plan, span);
+        List<SearchResult> results = ranked.size() > topK ? new ArrayList<>(ranked.subList(0, topK)) : ranked;
+        attachFileNames(results);
+        attachFunnelOutput(span, knnHits, bm25Hits, fused, ranked, topK);
+        return results;
     }
 
     private List<SearchResult> textOnlySearchWithPermission(String query, String userDbId,
-            List<String> userEffectiveTags, boolean administrator, int topK, Set<String> scopeFileMd5s) {
+            List<String> userEffectiveTags, boolean administrator, int topK, Set<String> scopeFileMd5s,
+            AiTraceService.TraceSpan span) {
         try {
             logger.debug("开始执行纯文本搜索，用户数据库ID: {}, 标签: {}", userDbId, userEffectiveTags);
 
+            RerankPlan plan = resolveRerankPlan(userDbId);
             SearchResponse<EsDocument> response = esClient.search(s -> s
                     .index("knowledge_base")
                     .query(q -> q.bool(b -> {
@@ -190,33 +287,20 @@ public class HybridSearchService {
                         return b;
                     }))
                     .minScore(0.3d)
-                    .size(topK),
+                    .size(Math.max(topK, plan != null ? plan.window() : rerankTopN)),
                     EsDocument.class);
 
             logger.debug("纯文本查询执行完成，命中数量: {}, 最大分数: {}",
                     response.hits().total().value(), response.hits().maxScore());
 
-            List<SearchResult> results = response.hits().hits().stream()
-                    .map(hit -> {
-                        assert hit.source() != null;
-                        logger.debug("纯文本搜索结果 - 文件: {}, 块: {}, 分数: {}, 内容: {}",
-                                hit.source().getFileMd5(), hit.source().getChunkId(), hit.score(),
-                                hit.source().getTextContent().substring(0,
-                                        Math.min(50, hit.source().getTextContent().length())));
-                        return new SearchResult(
-                                hit.source().getFileMd5(),
-                                hit.source().getChunkId(),
-                                hit.source().getTextContent(),
-                                hit.score(),
-                                hit.source().getUserId(),
-                                hit.source().getOrgTag(),
-                                hit.source().isPublic());
-                    })
-                    .toList();
+            List<SearchResult> results = toSearchResults(response);
+            List<SearchResult> ranked = applyRerank(query, results, plan, span);
+            List<SearchResult> limited = ranked.size() > topK ? new ArrayList<>(ranked.subList(0, topK)) : ranked;
 
-            logger.debug("返回纯文本搜索结果数量: {}", results.size());
-            attachFileNames(results);
-            return results;
+            logger.debug("返回纯文本搜索结果数量: {}", limited.size());
+            attachFileNames(limited);
+            attachFunnelOutput(span, null, results, null, ranked, topK);
+            return limited;
         } catch (Exception e) {
             logger.error("纯文本搜索失败", e);
             return new ArrayList<>();
@@ -227,81 +311,381 @@ public class HybridSearchService {
      * 匿名搜索方法，仅返回公开且不属于私人空间的文档。
      */
     public List<SearchResult> search(String query, int topK) {
+        AiTraceService.TraceSpan span = aiTraceService.startSpan("rag.hybrid_search", null, null, null)
+                .attribute("nexusmind.search.top_k", topK)
+                .attribute("nexusmind.search.query.length", query != null ? query.length() : 0)
+                .attribute("nexusmind.search.anonymous", true);
+        if (aiTraceService.shouldCaptureContent()) {
+            span.attribute("input.value", abbreviate(query, 2000))
+                    .attribute("langfuse.observation.input", abbreviate(query, 2000));
+        }
         try {
             logger.debug("开始混合检索，查询: {}, topK: {}", query, topK);
 
-            // 生成查询向量
-            final List<Float> queryVector = embedToVectorList(query, null);
-
-            // 如果向量生成失败，仅使用文本匹配
-            if (queryVector == null) {
-                logger.warn("向量生成失败，仅使用文本匹配进行搜索");
-                return textOnlySearch(query, topK);
+            List<SearchResult> results;
+            if ("legacy".equalsIgnoreCase(fusionMode)) {
+                span.attribute("nexusmind.search.fusion_mode", "legacy");
+                results = legacyAnonymousSearch(query, topK, span);
+                attachSearchOutputContent(span, results);
+            } else {
+                results = rrfAnonymousSearch(query, topK, span);
             }
-
-            SearchResponse<EsDocument> response = esClient.search(s -> {
-                s.index("knowledge_base");
-                int recallK = topK * 30;
-                s.knn(kn -> kn
-                        .field("vector")
-                        .queryVector(queryVector)
-                        .k(recallK)
-                        .numCandidates(recallK)
-                        .filter(buildPublicPermissionQuery()));
-
-                s.query(q -> q.bool(b -> b
-                        .must(m -> m.match(match -> match.field("textContent").query(query)))
-                        .filter(buildPublicPermissionQuery())));
-
-                // rescore BM25
-                s.rescore(r -> r
-                        .windowSize(recallK)
-                        .query(rq -> rq
-                                .queryWeight(0.2d)
-                                .rescoreQueryWeight(1.0d)
-                                .query(rqq -> rqq.match(m -> m
-                                        .field("textContent")
-                                        .query(query)
-                                        .operator(Operator.And)))));
-                s.size(topK);
-                return s;
-            }, EsDocument.class);
-
-            return response.hits().hits().stream()
-                    .map(hit -> {
-                        assert hit.source() != null;
-                        return new SearchResult(
-                                hit.source().getFileMd5(),
-                                hit.source().getChunkId(),
-                                hit.source().getTextContent(),
-                                hit.score());
-                    })
-                    .toList();
+            span.attribute("nexusmind.search.results.count", results.size());
+            return results;
         } catch (Exception e) {
+            span.error(e);
             logger.error("搜索失败", e);
             // 发生异常时尝试使用纯文本搜索作为后备方案
             try {
                 logger.info("尝试使用纯文本搜索作为后备方案");
-                return textOnlySearch(query, topK);
+                List<SearchResult> results = textOnlySearch(query, topK, span);
+                span.attribute("nexusmind.search.degraded_to", "text_only");
+                span.attribute("nexusmind.search.results.count", results.size());
+                return results;
             } catch (Exception fallbackError) {
                 logger.error("后备搜索也失败", fallbackError);
-                throw new RuntimeException("搜索完全失败", fallbackError);
+                return Collections.emptyList();
             }
+        } finally {
+            span.end();
+            span.close();
         }
     }
 
     /**
-     * 仅使用文本匹配的搜索方法
+     * 旧版匿名混合检索（单请求融合），通过 ai.retrieval.fusion-mode=legacy 回退使用
      */
-    private List<SearchResult> textOnlySearch(String query, int topK) throws Exception {
+    private List<SearchResult> legacyAnonymousSearch(String query, int topK, AiTraceService.TraceSpan span) throws Exception {
+        // 生成查询向量
+        final List<Float> queryVector = embedToVectorList(query, null);
+
+        // 如果向量生成失败，仅使用文本匹配
+        if (queryVector == null) {
+            logger.warn("向量生成失败，仅使用文本匹配进行搜索");
+            span.attribute("nexusmind.search.vector_failed", true);
+            return textOnlySearch(query, topK, span);
+        }
+
+        SearchResponse<EsDocument> response = esClient.search(s -> {
+            s.index("knowledge_base");
+            int recallK = topK * 30;
+            s.knn(kn -> kn
+                    .field("vector")
+                    .queryVector(queryVector)
+                    .k(recallK)
+                    .numCandidates(recallK)
+                    .filter(buildPublicPermissionQuery()));
+
+            s.query(q -> q.bool(b -> b
+                    .must(m -> m.match(match -> match.field("textContent").query(query)))
+                    .filter(buildPublicPermissionQuery())));
+
+            // rescore BM25
+            s.rescore(r -> r
+                    .windowSize(recallK)
+                    .query(rq -> rq
+                            .queryWeight(0.2d)
+                            .rescoreQueryWeight(1.0d)
+                            .query(rqq -> rqq.match(m -> m
+                                    .field("textContent")
+                                    .query(query)
+                                    .operator(Operator.And)))));
+            s.size(topK);
+            return s;
+        }, EsDocument.class);
+
+        return toSearchResultsBasic(response);
+    }
+
+    /**
+     * RRF 匿名管线：公开范围内 kNN/BM25 双路并行召回 -> RRF -> Rerank -> 截断 topK
+     */
+    private List<SearchResult> rrfAnonymousSearch(String query, int topK, AiTraceService.TraceSpan span) {
+        final List<Float> queryVector = embedToVectorList(query, null);
+        if (queryVector == null) {
+            logger.warn("向量生成失败，仅使用文本匹配进行搜索");
+            span.attribute("nexusmind.search.vector_failed", true);
+            try {
+                return textOnlySearch(query, topK, span);
+            } catch (Exception e) {
+                logger.error("纯文本后备搜索失败", e);
+                return List.of();
+            }
+        }
+
+        Query permission = buildPublicPermissionQuery();
+        CompletableFuture<List<SearchResult>> knnFuture = CompletableFuture.supplyAsync(
+                () -> knnRecall(queryVector, permission, null), SEARCH_BRANCH_EXECUTOR);
+        CompletableFuture<List<SearchResult>> bm25Future = CompletableFuture.supplyAsync(
+                () -> bm25Recall(query, permission, null), SEARCH_BRANCH_EXECUTOR);
+
+        List<SearchResult> knnHits = joinBranch("kNN", knnFuture);
+        List<SearchResult> bm25Hits = joinBranch("BM25", bm25Future);
+        span.attribute("nexusmind.search.knn_hits", knnHits.size())
+                .attribute("nexusmind.search.bm25_hits", bm25Hits.size());
+        if (knnHits.isEmpty() && bm25Hits.isEmpty()) {
+            return List.of();
+        }
+
+        RerankPlan plan = resolveRerankPlan(null);
+        List<SearchResult> fused = RrfFuser.fuse(knnHits, bm25Hits, rrfK,
+                Math.max(topK, plan != null ? plan.window() : 0));
+        span.attribute("nexusmind.search.fused_count", fused.size())
+                .attribute("nexusmind.search.rrf_k", rrfK);
+        List<SearchResult> ranked = applyRerank(query, fused, plan, span);
+        attachFunnelOutput(span, knnHits, bm25Hits, fused, ranked, topK);
+        return ranked.size() > topK ? new ArrayList<>(ranked.subList(0, topK)) : ranked;
+    }
+
+    /**
+     * 仅使用文本匹配的搜索方法（匿名），召回窗口扩大后经 rerank 重排再截断
+     */
+    private List<SearchResult> textOnlySearch(String query, int topK, AiTraceService.TraceSpan span) throws Exception {
+        RerankPlan plan = resolveRerankPlan(null);
         SearchResponse<EsDocument> response = esClient.search(s -> s
                 .index("knowledge_base")
                 .query(q -> q.bool(b -> b
                         .must(m -> m.match(match -> match.field("textContent").query(query)))
                         .filter(buildPublicPermissionQuery())))
-                .size(topK),
+                .size(Math.max(topK, plan != null ? plan.window() : rerankTopN)),
                 EsDocument.class);
 
+        List<SearchResult> results = toSearchResultsBasic(response);
+        List<SearchResult> ranked = applyRerank(query, results, plan, span);
+        attachFunnelOutput(span, null, results, null, ranked, topK);
+        return ranked.size() > topK ? new ArrayList<>(ranked.subList(0, topK)) : ranked;
+    }
+
+    /** kNN 召回分支：失败返回空列表，由另一路继续（不中断整条链路） */
+    private List<SearchResult> knnRecall(List<Float> queryVector, Query permission, Query scopeFilter) {
+        try {
+            SearchResponse<EsDocument> response = esClient.search(s -> {
+                s.index("knowledge_base");
+                s.knn(kn -> kn
+                        .field("vector")
+                        .queryVector(queryVector)
+                        .k(rankWindow)
+                        .numCandidates(rankWindow * 4)
+                        .filter(scopeFilter == null ? List.of(permission) : List.of(permission, scopeFilter)));
+                s.size(rankWindow);
+                return s;
+            }, EsDocument.class);
+            return toSearchResults(response);
+        } catch (Exception e) {
+            logger.warn("kNN 召回分支失败，该路结果置空: {}", e.getMessage());
+            return List.of();
+        }
+    }
+
+    /** BM25 召回分支：失败返回空列表，由另一路继续（不中断整条链路） */
+    private List<SearchResult> bm25Recall(String query, Query permission, Query scopeFilter) {
+        try {
+            SearchResponse<EsDocument> response = esClient.search(s -> s
+                    .index("knowledge_base")
+                    .query(q -> q.bool(b -> {
+                        b.must(mst -> mst.match(m -> m.field("textContent").query(query)));
+                        b.filter(permission);
+                        if (scopeFilter != null) b.filter(scopeFilter);
+                        return b;
+                    }))
+                    .size(rankWindow),
+                    EsDocument.class);
+            return toSearchResults(response);
+        } catch (Exception e) {
+            logger.warn("BM25 召回分支失败，该路结果置空: {}", e.getMessage());
+            return List.of();
+        }
+    }
+
+    private List<SearchResult> joinBranch(String branch, CompletableFuture<List<SearchResult>> future) {
+        try {
+            return future.get(30, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            logger.warn("{} 召回分支执行失败，使用另一路继续: {}", branch, e.getMessage());
+            return List.of();
+        }
+    }
+
+    /**
+     * 一次搜索的 rerank 执行计划：解析到的模型配置 + 生效窗口 + 追踪用户。
+     * 窗口优先级：模型配置的 top_n（重排候选条数）> 全局 ai.retrieval.rerank-top-n。
+     */
+    record RerankPlan(ModelConfigService.ResolvedModelConfig config, int window, String userId) {
+    }
+
+    private RerankPlan resolveRerankPlan(String userIdOrName) {
+        if (!rerankEnabled) {
+            return null;
+        }
+        ModelConfigService.ResolvedModelConfig config = modelConfigService.resolveRerankConfig(userIdOrName).orElse(null);
+        if (config == null) {
+            return null;
+        }
+        int window = config.topN() != null && config.topN() > 0 ? config.topN() : rerankTopN;
+        return new RerankPlan(config, window, userIdOrName);
+    }
+
+    /**
+     * 调用 rerank 重排候选；无计划/候选不足/调用失败时原样返回（保持 RRF 融合序）。
+     * 窗口内的候选按相关性重排；窗口外的候选保留 RRF 融合序排在其后，保证结果总量不丢失。
+     */
+    List<SearchResult> applyRerank(String query, List<SearchResult> candidates, RerankPlan plan) {
+        return applyRerank(query, candidates, plan, null);
+    }
+
+    List<SearchResult> applyRerank(String query, List<SearchResult> candidates, RerankPlan plan,
+                                   AiTraceService.TraceSpan span) {
+        if (plan == null || candidates == null || candidates.size() < 2) {
+            if (span != null) span.attribute("nexusmind.search.rerank_applied", false);
+            return candidates;
+        }
+        try {
+            List<SearchResult> window = candidates.size() > plan.window()
+                    ? candidates.subList(0, plan.window())
+                    : candidates;
+            if (span != null) {
+                span.attribute("nexusmind.search.rerank_window", plan.window())
+                        .attribute("nexusmind.search.rerank_docs_sent", window.size());
+            }
+            List<String> documents = window.stream().map(SearchResult::getTextContent).toList();
+            double[] scores = rerankClient.rerank(query, documents, plan.config(), plan.userId());
+            if (scores == null) {
+                if (span != null) span.attribute("nexusmind.search.rerank_applied", false);
+                return candidates;
+            }
+            List<SearchResult> ranked = applyScores(window, scores);
+            if (span != null) span.attribute("nexusmind.search.rerank_applied", true);
+            if (window.size() < candidates.size()) {
+                List<SearchResult> merged = new ArrayList<>(ranked);
+                merged.addAll(candidates.subList(window.size(), candidates.size()));
+                return merged;
+            }
+            return ranked;
+        } catch (Exception e) {
+            logger.warn("应用 rerank 结果失败，保持融合排序: {}", e.getMessage());
+            if (span != null) span.attribute("nexusmind.search.rerank_applied", false);
+            return candidates;
+        }
+    }
+
+    /** 按相关性分数降序重排候选，并把分数写回 SearchResult.score */
+    static List<SearchResult> applyScores(List<SearchResult> candidates, double[] scores) {
+        if (candidates == null || scores == null || scores.length < candidates.size()) {
+            return candidates;
+        }
+        Integer[] order = new Integer[candidates.size()];
+        for (int i = 0; i < order.length; i++) {
+            order[i] = i;
+        }
+        Arrays.sort(order, (a, b) -> Double.compare(scores[b], scores[a]));
+        List<SearchResult> ranked = new ArrayList<>(order.length);
+        for (int index : order) {
+            SearchResult hit = candidates.get(index);
+            ranked.add(new SearchResult(
+                    hit.getFileMd5(),
+                    hit.getChunkId(),
+                    hit.getTextContent(),
+                    scores[index],
+                    hit.getUserId(),
+                    hit.getOrgTag(),
+                    Boolean.TRUE.equals(hit.getIsPublic()),
+                    hit.getFileName()));
+        }
+        return ranked;
+    }
+
+    /** 检索漏斗构建器（仅内容采集开启时使用） */
+    private static final ObjectMapper FUNNEL_MAPPER = new ObjectMapper()
+            .enable(SerializationFeature.INDENT_OUTPUT);
+
+    /**
+     * 把检索漏斗各阶段的命中分片写入 span 输出：kNN/BM25 各自召回了哪些分片、RRF 融合序、重排后最终序。
+     */
+    private void attachFunnelOutput(AiTraceService.TraceSpan span, List<SearchResult> knn, List<SearchResult> bm25,
+                                    List<SearchResult> fused, List<SearchResult> finalResults, int finalLimit) {
+        if (!aiTraceService.shouldCaptureContent()) {
+            return;
+        }
+        try {
+            ObjectNode funnel = FUNNEL_MAPPER.createObjectNode();
+            ObjectNode totals = funnel.putObject("totals");
+            totals.put("knn_hits", knn == null ? 0 : knn.size());
+            totals.put("bm25_hits", bm25 == null ? 0 : bm25.size());
+            totals.put("fused", fused == null ? 0 : fused.size());
+            if (finalResults != null) totals.put("final", finalResults.size());
+            if (knn != null) funnel.set("knn_recall", funnelArray(knn, 20));
+            if (bm25 != null) funnel.set("bm25_recall", funnelArray(bm25, 20));
+            if (fused != null) funnel.set("rrf_fused", funnelArray(fused, 30));
+            if (finalResults != null) funnel.set("final", funnelArray(finalResults, finalLimit));
+            String json = FUNNEL_MAPPER.writeValueAsString(funnel);
+            span.attribute("langfuse.observation.output", json)
+                    .attribute("output.value", json);
+        } catch (Exception e) {
+            logger.warn("构建检索漏斗输出失败: {}", e.getMessage());
+        }
+    }
+
+    private ArrayNode funnelArray(List<SearchResult> hits, int limit) {
+        ArrayNode array = FUNNEL_MAPPER.createArrayNode();
+        int size = Math.min(hits.size(), limit);
+        for (int i = 0; i < size; i++) {
+            SearchResult hit = hits.get(i);
+            ObjectNode node = array.addObject();
+            node.put("rank", i + 1);
+            node.put("file", hit.getFileName() != null ? hit.getFileName() : hit.getFileMd5());
+            node.put("chunk", hit.getChunkId());
+            if (hit.getScore() != null) node.put("score", hit.getScore());
+            String text = hit.getTextContent();
+            if (text != null && text.length() > 80) text = text.substring(0, 80) + "…";
+            node.put("preview", text);
+        }
+        return array;
+    }
+
+    private void attachSearchOutputContent(AiTraceService.TraceSpan span, List<SearchResult> results) {
+        if (!aiTraceService.shouldCaptureContent() || results == null || results.isEmpty()) {
+            return;
+        }
+        StringBuilder output = new StringBuilder();
+        int limit = Math.min(3, results.size());
+        for (int i = 0; i < limit; i++) {
+            SearchResult hit = results.get(i);
+            output.append("[").append(i + 1).append("] ")
+                    .append(hit.getFileName() != null ? hit.getFileName() : hit.getFileMd5())
+                    .append("#").append(hit.getChunkId())
+                    .append(" score=").append(hit.getScore())
+                    .append(": ").append(abbreviate(hit.getTextContent(), 120)).append('\n');
+        }
+        span.attribute("output.value", abbreviate(output.toString(), 2000))
+                .attribute("langfuse.observation.output", abbreviate(output.toString(), 2000));
+    }
+
+    private static String abbreviate(String value, int maxLength) {
+        if (value == null) {
+            return "";
+        }
+        return value.length() <= maxLength ? value : value.substring(0, maxLength) + "…";
+    }
+
+    /** 带权限场景的结果映射（保留归属字段） */
+    private List<SearchResult> toSearchResults(SearchResponse<EsDocument> response) {
+        return response.hits().hits().stream()
+                .map(hit -> {
+                    assert hit.source() != null;
+                    return new SearchResult(
+                            hit.source().getFileMd5(),
+                            hit.source().getChunkId(),
+                            hit.source().getTextContent(),
+                            hit.score(),
+                            hit.source().getUserId(),
+                            hit.source().getOrgTag(),
+                            hit.source().isPublic());
+                })
+                .toList();
+    }
+
+    /** 匿名场景的结果映射（不向外暴露上传者与组织标签） */
+    private List<SearchResult> toSearchResultsBasic(SearchResponse<EsDocument> response) {
         return response.hits().hits().stream()
                 .map(hit -> {
                     assert hit.source() != null;
@@ -349,13 +733,13 @@ public class HybridSearchService {
                 logger.debug("解析用户ID为Long: {}", userIdLong);
                 user = userRepository.findById(userIdLong)
                         .orElseThrow(
-                                () -> new CustomException("User not found with ID: " + userId, HttpStatus.NOT_FOUND));
+                                () -> new CustomException("用户不存在，ID：" + userId, HttpStatus.NOT_FOUND));
                 logger.debug("通过ID找到用户: {}", user.getUsername());
             } catch (NumberFormatException e) {
                 // 如果userId不是数字格式，则假设它就是username
                 logger.debug("用户ID不是数字格式，作为用户名查找: {}", userId);
                 user = userRepository.findByUsername(userId)
-                        .orElseThrow(() -> new CustomException("User not found: " + userId, HttpStatus.NOT_FOUND));
+                        .orElseThrow(() -> new CustomException("用户不存在：" + userId, HttpStatus.NOT_FOUND));
                 logger.debug("通过用户名找到用户: {}", user.getUsername());
             }
 
@@ -382,14 +766,14 @@ public class HybridSearchService {
                 logger.debug("解析用户ID为Long: {}", userIdLong);
                 user = userRepository.findById(userIdLong)
                         .orElseThrow(
-                                () -> new CustomException("User not found with ID: " + userId, HttpStatus.NOT_FOUND));
+                                () -> new CustomException("用户不存在，ID：" + userId, HttpStatus.NOT_FOUND));
                 logger.debug("通过ID找到用户: {}", user.getUsername());
                 return userIdLong.toString(); // 如果输入已经是数字ID，直接返回
             } catch (NumberFormatException e) {
                 // 如果userId不是数字格式，则假设它就是username
                 logger.debug("用户ID不是数字格式，作为用户名查找: {}", userId);
                 user = userRepository.findByUsername(userId)
-                        .orElseThrow(() -> new CustomException("User not found: " + userId, HttpStatus.NOT_FOUND));
+                        .orElseThrow(() -> new CustomException("用户不存在：" + userId, HttpStatus.NOT_FOUND));
                 logger.debug("通过用户名找到用户: {}, ID: {}", user.getUsername(), user.getId());
                 return user.getId().toString(); // 返回用户的数据库ID
             }
@@ -451,7 +835,7 @@ public class HybridSearchService {
             } catch (NumberFormatException e) {
                 user = userRepository.findByUsername(userId).orElse(null);
             }
-            return user != null && user.getRole() == User.Role.ADMIN;
+            return user != null && user.getRole().isAdministrator();
         } catch (Exception e) {
             logger.warn("无法确定用户角色，按普通用户权限处理: userId={}", userId, e);
             return false;

@@ -59,6 +59,16 @@ public class AiModelConfig {
 
     private Integer maxConcurrency;
 
+    /** RERANK：自定义排序任务指令（DashScope instruct 参数，建议英文；空 = 使用服务端默认指令） */
+    @Column(length = 2000)
+    private String instruct;
+
+    /** RERANK：重排候选窗口（送入重排模型的候选条数，1~100）；空 = 使用全局 ai.retrieval.rerank-top-n */
+    private Integer topN;
+
+    /** RERANK：视频抽帧比例 fps（0~1，仅重排视频文档时生效） */
+    private Double fps;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 

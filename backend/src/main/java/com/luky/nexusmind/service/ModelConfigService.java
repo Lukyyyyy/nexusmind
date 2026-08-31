@@ -24,6 +24,18 @@ import java.util.Optional;
 public class ModelConfigService {
     public static final int REQUIRED_EMBEDDING_DIMENSION = 2048;
 
+    /** 各检索场景统一的最终返回条数（聊天/Agent/搜索的 topK），同时作为重排窗口的下限 */
+    public static final int STANDARD_FINAL_TOP_K = 10;
+
+    /** DashScope rerank 单次最大文本候选数 */
+    private static final int RERANK_MAX_DOCS = 100;
+
+    /** DashScope 原生 rerank 接口路径（qwen3-rerank / qwen3-vl-rerank 系列，非 OpenAI 兼容格式） */
+    public static final String RERANK_ENDPOINT_PATH = "/api/v1/services/rerank/text-rerank/text-rerank";
+
+    /** 全局重排候选窗口（ai.retrieval.rerank-top-n），作为模型配置 top_n 的默认值与上限 */
+    private final int globalRerankWindow;
+
     private final AiModelConfigRepository configRepository;
     private final UserModelPreferenceRepository preferenceRepository;
     private final UserRepository userRepository;
@@ -55,7 +67,8 @@ public class ModelConfigService {
             @Value("${embedding.api.batch-size:100}") int legacyEmbeddingBatchSize,
             @Value("${embedding.api.concurrent-enabled:false}") boolean legacyEmbeddingConcurrentEnabled,
             @Value("${embedding.api.max-concurrency:1}") int legacyEmbeddingMaxConcurrency,
-            @Value("${embedding.api.dimension:2048}") int legacyEmbeddingDimension) {
+            @Value("${embedding.api.dimension:2048}") int legacyEmbeddingDimension,
+            @Value("${ai.retrieval.rerank-top-n:30}") int globalRerankWindow) {
         this.configRepository = configRepository;
         this.preferenceRepository = preferenceRepository;
         this.userRepository = userRepository;
@@ -71,13 +84,14 @@ public class ModelConfigService {
         this.legacyEmbeddingConcurrentEnabled = legacyEmbeddingConcurrentEnabled;
         this.legacyEmbeddingMaxConcurrency = legacyEmbeddingMaxConcurrency;
         this.legacyEmbeddingDimension = legacyEmbeddingDimension;
+        this.globalRerankWindow = globalRerankWindow;
     }
 
     @Transactional(readOnly = true)
     public ModelConfigOverview listVisibleConfigs(String username) {
         User user = requireUser(username);
         List<AiModelConfig> configs = new ArrayList<>();
-        if (user.getRole() == User.Role.ADMIN) {
+        if (user.getRole().isAdministrator()) {
             configs.addAll(configRepository.findByOwnerType(AiModelOwnerType.SYSTEM));
         } else {
             configs.addAll(configRepository.findByOwnerTypeAndEnabledTrue(AiModelOwnerType.SYSTEM));
@@ -90,7 +104,10 @@ public class ModelConfigService {
                 effectiveSelectedConfigId(user, preference, AiModelType.LLM),
                 effectiveSelectedConfigId(user, preference, AiModelType.EMBEDDING),
                 effectiveGraphPreferenceId(user, preference),
-                user.getRole() == User.Role.ADMIN);
+                effectiveRerankPreferenceId(user, preference),
+                STANDARD_FINAL_TOP_K,
+                Math.min(RERANK_MAX_DOCS, globalRerankWindow),
+                user.getRole().isAdministrator());
     }
 
     @Transactional
@@ -137,6 +154,9 @@ public class ModelConfigService {
         Long graphExtractionConfigId = request.graphExtractionConfigId() == null
                 ? null
                 : validateSelectableConfig(user, request.graphExtractionConfigId(), AiModelType.LLM);
+        Long rerankConfigId = request.rerankConfigId() == null
+                ? null
+                : validateSelectableConfig(user, request.rerankConfigId(), AiModelType.RERANK);
         UserModelPreference preference = preferenceRepository.findByUserId(user.getId()).orElseGet(() -> {
             UserModelPreference created = new UserModelPreference();
             created.setUserId(user.getId());
@@ -145,9 +165,10 @@ public class ModelConfigService {
         preference.setLlmConfigId(llmConfigId);
         preference.setEmbeddingConfigId(embeddingConfigId);
         preference.setGraphExtractionConfigId(graphExtractionConfigId);
+        preference.setRerankConfigId(rerankConfigId);
         UserModelPreference saved = preferenceRepository.save(preference);
         return new PreferenceResponse(saved.getLlmConfigId(), saved.getEmbeddingConfigId(),
-                saved.getGraphExtractionConfigId());
+                saved.getGraphExtractionConfigId(), saved.getRerankConfigId());
     }
 
     @Transactional(readOnly = true)
@@ -163,10 +184,7 @@ public class ModelConfigService {
     /** Graph extraction follows the chat model unless an explicit LLM is selected. */
     @Transactional(readOnly = true)
     public ResolvedModelConfig resolveGraphExtractionConfig(String username) {
-        if (!hasText(username)) {
-            return resolveLlmConfig(username);
-        }
-        User user = userRepository.findByUsername(username).orElse(null);
+        User user = findUserFlexible(username);
         if (user == null) {
             return resolveLlmConfig(username);
         }
@@ -183,6 +201,44 @@ public class ModelConfigService {
         return resolveLlmConfig(username);
     }
 
+    /**
+     * Rerank 模型解析：显式偏好 > 用户自建且启用的 RERANK 配置 > 系统默认；均无时返回 empty（表示 rerank 关闭）。
+     */
+    @Transactional(readOnly = true)
+    public Optional<ResolvedModelConfig> resolveRerankConfig(String userIdOrName) {
+        User user = findUserFlexible(userIdOrName);
+        if (user != null) {
+            UserModelPreference preference = preferenceRepository.findByUserId(user.getId()).orElse(null);
+            if (preference != null && preference.getRerankConfigId() != null) {
+                Optional<AiModelConfig> selected = configRepository.findById(preference.getRerankConfigId())
+                        .filter(config -> config.getModelType() == AiModelType.RERANK)
+                        .filter(AiModelConfig::isEnabled)
+                        .filter(config -> canView(user, config));
+                if (selected.isPresent()) {
+                    return selected.map(this::toResolved);
+                }
+            }
+            Optional<AiModelConfig> own = configRepository
+                    .findFirstByOwnerTypeAndModelTypeAndOwnerUserIdAndEnabledTrueOrderByIdAsc(
+                            AiModelOwnerType.USER, AiModelType.RERANK, user.getId());
+            if (own.isPresent()) {
+                return own.map(this::toResolved);
+            }
+        }
+        return resolveSystemDefault(AiModelType.RERANK);
+    }
+
+    private User findUserFlexible(String userIdOrName) {
+        if (!hasText(userIdOrName)) {
+            return null;
+        }
+        try {
+            return userRepository.findById(Long.parseLong(userIdOrName)).orElse(null);
+        } catch (NumberFormatException e) {
+            return userRepository.findByUsername(userIdOrName).orElse(null);
+        }
+    }
+
     private Long effectiveGraphPreferenceId(User user, UserModelPreference preference) {
         if (preference == null || preference.getGraphExtractionConfigId() == null) {
             return null;
@@ -195,11 +251,28 @@ public class ModelConfigService {
                 .orElse(null);
     }
 
+    /** 展示用：显式 Rerank 偏好生效时返回其 ID，否则回落到系统默认 Rerank 配置 */
+    private Long effectiveRerankPreferenceId(User user, UserModelPreference preference) {
+        if (preference != null && preference.getRerankConfigId() != null) {
+            Optional<AiModelConfig> selected = configRepository.findById(preference.getRerankConfigId())
+                    .filter(config -> config.getModelType() == AiModelType.RERANK)
+                    .filter(AiModelConfig::isEnabled)
+                    .filter(config -> canView(user, config));
+            if (selected.isPresent()) {
+                return preference.getRerankConfigId();
+            }
+        }
+        return resolveSystemDefault(AiModelType.RERANK)
+                .map(ResolvedModelConfig::id)
+                .orElse(null);
+    }
+
     private Optional<ResolvedModelConfig> resolveConfig(String username, AiModelType modelType) {
         if (!hasText(username)) {
             return resolveSystemDefault(modelType);
         }
-        User user = userRepository.findByUsername(username).orElse(null);
+        // 兼容数字用户 ID 与用户名两种形式（链路追踪层传递的可能是任一种）
+        User user = findUserFlexible(username);
         if (user == null) {
             return resolveSystemDefault(modelType);
         }
@@ -247,20 +320,47 @@ public class ModelConfigService {
     }
 
     private void validateRequest(User user, ModelConfigRequest request) {
-        if (request.ownerType() == AiModelOwnerType.SYSTEM && user.getRole() != User.Role.ADMIN) {
-            throw new CustomException("Only administrators can manage system model configs", HttpStatus.FORBIDDEN);
+        if (request.ownerType() == AiModelOwnerType.SYSTEM && !user.getRole().isAdministrator()) {
+            throw new CustomException("仅管理员可管理系统模型配置", HttpStatus.FORBIDDEN);
         }
         if (!hasText(request.name()) || !hasText(request.baseUrl()) || !hasText(request.modelName())) {
-            throw new CustomException("Model name, base URL and model ID are required", HttpStatus.BAD_REQUEST);
+            throw new CustomException("模型名称、基础 URL 和模型 ID 不能为空", HttpStatus.BAD_REQUEST);
         }
         if (request.modelType() == AiModelType.EMBEDDING) {
             int dimension = request.dimension() != null ? request.dimension() : REQUIRED_EMBEDDING_DIMENSION;
             if (dimension != REQUIRED_EMBEDDING_DIMENSION) {
-                throw new CustomException("Embedding dimension must be 2048", HttpStatus.BAD_REQUEST);
+                throw new CustomException("向量维度必须为 2048", HttpStatus.BAD_REQUEST);
+            }
+            if (request.batchSize() != null && (request.batchSize() < 1 || request.batchSize() > 10)) {
+                throw new CustomException("向量化批量大小必须在 1 到 10 之间", HttpStatus.BAD_REQUEST);
+            }
+            if (request.maxConcurrency() != null && (request.maxConcurrency() < 1 || request.maxConcurrency() > 30)) {
+                throw new CustomException("向量化最大并发数必须在 1 到 30 之间", HttpStatus.BAD_REQUEST);
+            }
+        }
+        if (request.modelType() == AiModelType.RERANK) {
+            if (request.topN() != null) {
+                if (request.topN() < STANDARD_FINAL_TOP_K) {
+                    throw new CustomException(
+                            "重排窗口 top_n 不能小于最终返回条数 topK（" + STANDARD_FINAL_TOP_K + "）",
+                            HttpStatus.BAD_REQUEST);
+                }
+                int windowCeiling = Math.min(RERANK_MAX_DOCS, globalRerankWindow);
+                if (request.topN() > windowCeiling) {
+                    throw new CustomException(
+                            "重排窗口 top_n 不能超过全局融合窗口（" + windowCeiling + "）",
+                            HttpStatus.BAD_REQUEST);
+                }
+            }
+            if (request.fps() != null && (request.fps() < 0 || request.fps() > 1)) {
+                throw new CustomException("Rerank fps 必须在 0 到 1 之间", HttpStatus.BAD_REQUEST);
+            }
+            if (request.instruct() != null && request.instruct().length() > 2000) {
+                throw new CustomException("Rerank 指令长度不能超过 2000 字符", HttpStatus.BAD_REQUEST);
             }
         }
         if (Boolean.TRUE.equals(request.defaultModel()) && request.ownerType() != AiModelOwnerType.SYSTEM) {
-            throw new CustomException("Only system model configs can be default", HttpStatus.BAD_REQUEST);
+            throw new CustomException("仅系统模型配置可设为默认", HttpStatus.BAD_REQUEST);
         }
     }
 
@@ -270,7 +370,7 @@ public class ModelConfigService {
         config.setModelType(request.modelType());
         config.setName(request.name().trim());
         config.setProvider(trimToNull(request.provider()));
-        config.setBaseUrl(trimTrailingSlash(request.baseUrl()));
+        config.setBaseUrl(normalizeBaseUrl(request.baseUrl(), request.modelType()));
         if (creating || hasText(request.apiKey())) {
             config.setApiKeyEncrypted(cryptoService.encrypt(request.apiKey()));
         }
@@ -285,16 +385,20 @@ public class ModelConfigService {
                 : null);
         config.setBatchSize(request.batchSize());
         config.setMaxConcurrency(request.maxConcurrency());
+        boolean rerank = request.modelType() == AiModelType.RERANK;
+        config.setInstruct(rerank ? trimToNull(request.instruct()) : null);
+        config.setTopN(rerank ? request.topN() : null);
+        config.setFps(rerank ? request.fps() : null);
     }
 
     private AiModelConfig requireEditableConfig(User user, Long id) {
         AiModelConfig config = configRepository.findById(id)
-                .orElseThrow(() -> new CustomException("Model config not found", HttpStatus.NOT_FOUND));
-        if (config.getOwnerType() == AiModelOwnerType.SYSTEM && user.getRole() != User.Role.ADMIN) {
-            throw new CustomException("Only administrators can manage system model configs", HttpStatus.FORBIDDEN);
+                .orElseThrow(() -> new CustomException("模型配置不存在", HttpStatus.NOT_FOUND));
+        if (config.getOwnerType() == AiModelOwnerType.SYSTEM && !user.getRole().isAdministrator()) {
+            throw new CustomException("仅管理员可管理系统模型配置", HttpStatus.FORBIDDEN);
         }
         if (config.getOwnerType() == AiModelOwnerType.USER && !user.getId().equals(config.getOwnerUserId())) {
-            throw new CustomException("Cannot modify another user's model config", HttpStatus.FORBIDDEN);
+            throw new CustomException("不能修改其他用户的模型配置", HttpStatus.FORBIDDEN);
         }
         return config;
     }
@@ -304,16 +408,16 @@ public class ModelConfigService {
             return null;
         }
         AiModelConfig config = configRepository.findById(id)
-                .orElseThrow(() -> new CustomException("Model config not found", HttpStatus.NOT_FOUND));
+                .orElseThrow(() -> new CustomException("模型配置不存在", HttpStatus.NOT_FOUND));
         if (config.getModelType() != expectedType || !config.isEnabled() || !canView(user, config)) {
-            throw new CustomException("Model config is not selectable", HttpStatus.BAD_REQUEST);
+            throw new CustomException("该模型配置不可选择", HttpStatus.BAD_REQUEST);
         }
         return id;
     }
 
     private boolean canView(User user, AiModelConfig config) {
         if (config.getOwnerType() == AiModelOwnerType.SYSTEM) {
-            return config.isEnabled() || user.getRole() == User.Role.ADMIN;
+            return config.isEnabled() || user.getRole().isAdministrator();
         }
         return user.getId().equals(config.getOwnerUserId());
     }
@@ -332,7 +436,7 @@ public class ModelConfigService {
 
     private User requireUser(String username) {
         return userRepository.findByUsername(username)
-                .orElseThrow(() -> new CustomException("User not found", HttpStatus.NOT_FOUND));
+                .orElseThrow(() -> new CustomException("用户不存在", HttpStatus.NOT_FOUND));
     }
 
     private ResolvedModelConfig toResolved(AiModelConfig config) {
@@ -341,7 +445,7 @@ public class ModelConfigService {
                 config.getOwnerType(),
                 config.getModelType(),
                 config.getName(),
-                config.getBaseUrl(),
+                normalizeBaseUrl(config.getBaseUrl(), config.getModelType()),
                 cryptoService.decrypt(config.getApiKeyEncrypted()),
                 config.getModelName(),
                 config.getTemperature(),
@@ -349,7 +453,10 @@ public class ModelConfigService {
                 config.getMaxTokens(),
                 config.getDimension(),
                 config.getBatchSize(),
-                config.getMaxConcurrency());
+                config.getMaxConcurrency(),
+                config.getInstruct(),
+                config.getTopN(),
+                config.getFps());
     }
 
     private ResolvedModelConfig legacyLlmConfig() {
@@ -359,12 +466,15 @@ public class ModelConfigService {
                 AiModelOwnerType.SYSTEM,
                 AiModelType.LLM,
                 "YAML 默认 LLM",
-                trimTrailingSlash(legacyLlmBaseUrl),
+                normalizeBaseUrl(legacyLlmBaseUrl, AiModelType.LLM),
                 legacyLlmApiKey,
                 legacyLlmModel,
                 gen.getTemperature(),
                 gen.getTopP(),
                 gen.getMaxTokens(),
+                null,
+                null,
+                null,
                 null,
                 null,
                 null);
@@ -376,7 +486,7 @@ public class ModelConfigService {
                 AiModelOwnerType.SYSTEM,
                 AiModelType.EMBEDDING,
                 "YAML 默认向量模型",
-                trimTrailingSlash(legacyEmbeddingBaseUrl),
+                normalizeBaseUrl(legacyEmbeddingBaseUrl, AiModelType.EMBEDDING),
                 legacyEmbeddingApiKey,
                 legacyEmbeddingModel,
                 null,
@@ -384,7 +494,10 @@ public class ModelConfigService {
                 null,
                 legacyEmbeddingDimension,
                 legacyEmbeddingBatchSize,
-                legacyEmbeddingConcurrentEnabled ? legacyEmbeddingMaxConcurrency : 1);
+                legacyEmbeddingConcurrentEnabled ? legacyEmbeddingMaxConcurrency : 1,
+                null,
+                null,
+                null);
     }
 
     private ModelConfigResponse toResponse(AiModelConfig config) {
@@ -395,7 +508,7 @@ public class ModelConfigService {
                 config.getModelType(),
                 config.getName(),
                 config.getProvider(),
-                config.getBaseUrl(),
+                normalizeBaseUrl(config.getBaseUrl(), config.getModelType()),
                 maskApiKey(config.getApiKeyEncrypted()),
                 config.getModelName(),
                 config.isEnabled(),
@@ -405,7 +518,10 @@ public class ModelConfigService {
                 config.getMaxTokens(),
                 config.getDimension(),
                 config.getBatchSize(),
-                config.getMaxConcurrency());
+                config.getMaxConcurrency(),
+                config.getInstruct(),
+                config.getTopN(),
+                config.getFps());
     }
 
     private String maskApiKey(String encrypted) {
@@ -423,7 +539,23 @@ public class ModelConfigService {
         return hasText(value) ? value.trim() : null;
     }
 
-    private String trimTrailingSlash(String value) {
+    static String normalizeBaseUrl(String value, AiModelType modelType) {
+        String normalized = trimTrailingSlash(value);
+        if (normalized == null) {
+            return null;
+        }
+        if (modelType == AiModelType.RERANK) {
+            return normalized.endsWith(RERANK_ENDPOINT_PATH)
+                    ? trimTrailingSlash(normalized.substring(0, normalized.length() - RERANK_ENDPOINT_PATH.length()))
+                    : normalized;
+        }
+        String endpoint = modelType == AiModelType.EMBEDDING ? "/embeddings" : "/chat/completions";
+        return normalized != null && normalized.endsWith(endpoint)
+                ? trimTrailingSlash(normalized.substring(0, normalized.length() - endpoint.length()))
+                : normalized;
+    }
+
+    private static String trimTrailingSlash(String value) {
         if (value == null) {
             return null;
         }
@@ -453,7 +585,10 @@ public class ModelConfigService {
             Integer maxTokens,
             Integer dimension,
             Integer batchSize,
-            Integer maxConcurrency) {
+            Integer maxConcurrency,
+            String instruct,
+            Integer topN,
+            Double fps) {
     }
 
     public record ModelConfigResponse(
@@ -473,7 +608,10 @@ public class ModelConfigService {
             Integer maxTokens,
             Integer dimension,
             Integer batchSize,
-            Integer maxConcurrency) {
+            Integer maxConcurrency,
+            String instruct,
+            Integer topN,
+            Double fps) {
     }
 
     public record ModelConfigOverview(
@@ -481,13 +619,18 @@ public class ModelConfigService {
             Long selectedLlmConfigId,
             Long selectedEmbeddingConfigId,
             Long selectedGraphExtractionConfigId,
+            Long selectedRerankConfigId,
+            int rerankWindowMin,
+            int rerankWindowMax,
             boolean admin) {
     }
 
-    public record PreferenceRequest(Long llmConfigId, Long embeddingConfigId, Long graphExtractionConfigId) {
+    public record PreferenceRequest(Long llmConfigId, Long embeddingConfigId, Long graphExtractionConfigId,
+                                    Long rerankConfigId) {
     }
 
-    public record PreferenceResponse(Long llmConfigId, Long embeddingConfigId, Long graphExtractionConfigId) {
+    public record PreferenceResponse(Long llmConfigId, Long embeddingConfigId, Long graphExtractionConfigId,
+                                     Long rerankConfigId) {
     }
 
     public record ResolvedModelConfig(
@@ -503,6 +646,9 @@ public class ModelConfigService {
             Integer maxTokens,
             Integer dimension,
             Integer batchSize,
-            Integer maxConcurrency) {
+            Integer maxConcurrency,
+            String instruct,
+            Integer topN,
+            Double fps) {
     }
 }

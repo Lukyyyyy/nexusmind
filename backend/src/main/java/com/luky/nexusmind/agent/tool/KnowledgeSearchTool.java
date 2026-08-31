@@ -9,13 +9,14 @@ import com.luky.nexusmind.agent.ToolDefinition;
 import com.luky.nexusmind.agent.ToolResult;
 import com.luky.nexusmind.entity.SearchResult;
 import com.luky.nexusmind.service.HybridSearchService;
+import com.luky.nexusmind.service.ModelConfigService;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
 
 @Component
 public class KnowledgeSearchTool implements AgentTool {
-    private static final int RESULT_LIMIT = 10;
+    private static final int RESULT_LIMIT = ModelConfigService.STANDARD_FINAL_TOP_K;
 
     private final HybridSearchService searchService;
     private final ObjectMapper mapper;
@@ -41,7 +42,7 @@ public class KnowledgeSearchTool implements AgentTool {
     public ToolResult execute(String callId, JsonNode arguments, AgentContext context) {
         String query = requiredText(arguments, "query");
         List<SearchResult> results = searchService.searchWithPermission(
-                query, context.userId(), RESULT_LIMIT, context.scopeFileMd5s());
+                query, context.traceUserId(), RESULT_LIMIT, context.scopeFileMd5s());
         ObjectNode output = mapper.createObjectNode();
         output.put("status", "success");
         output.put("query", query);

@@ -49,12 +49,12 @@ public class ModelConfigController {
     }
 
     private ResponseEntity<?> ok(Object data) {
-        return ResponseEntity.ok(Map.of("code", 200, "message", "success", "data", data == null ? Map.of() : data));
+        return ResponseEntity.ok(Map.of("code", 200, "message", "操作成功", "data", data == null ? Map.of() : data));
     }
 
     private String username(Authentication authentication) {
         if (authentication == null || authentication.getName() == null || authentication.getName().isBlank()) {
-            throw new CustomException("Unauthorized", HttpStatus.UNAUTHORIZED);
+            throw new CustomException("未登录或登录已失效", HttpStatus.UNAUTHORIZED);
         }
         return authentication.getName();
     }

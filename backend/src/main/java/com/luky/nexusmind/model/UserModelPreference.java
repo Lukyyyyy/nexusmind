@@ -28,6 +28,10 @@ public class UserModelPreference {
     @Column(name = "graph_extraction_config_id")
     private Long graphExtractionConfigId;
 
+    /** Null means that rerank follows the system default (or is off when no default exists). */
+    @Column(name = "rerank_config_id")
+    private Long rerankConfigId;
+
     @CreationTimestamp
     private LocalDateTime createdAt;
 
