@@ -30,7 +30,7 @@ public class ConversationService {
      */
     public void recordConversation(String username, String question, String answer) {
         User user = userRepository.findByUsername(username)
-                .orElseThrow(() -> new CustomException("User not found", HttpStatus.NOT_FOUND));
+                .orElseThrow(() -> new CustomException("用户不存在", HttpStatus.NOT_FOUND));
 
         Conversation conversation = new Conversation();
         conversation.setUser(user);
@@ -50,10 +50,10 @@ public class ConversationService {
      */
     public List<Conversation> getConversations(String username, LocalDateTime startDate, LocalDateTime endDate) {
         User user = userRepository.findByUsername(username)
-                .orElseThrow(() -> new CustomException("User not found", HttpStatus.NOT_FOUND));
+                .orElseThrow(() -> new CustomException("用户不存在", HttpStatus.NOT_FOUND));
 
         // 检查用户角色，如果是管理员且username参数为"all"，则返回所有对话历史
-        if (user.getRole() == User.Role.ADMIN && "all".equals(username)) {
+        if (user.getRole().isAdministrator() && "all".equals(username)) {
             if (startDate != null && endDate != null) {
                 return conversationRepository.findByTimestampBetween(startDate, endDate);
             } else {
@@ -82,17 +82,17 @@ public class ConversationService {
     public List<Conversation> getAllConversations(String adminUsername, String targetUsername, 
                                                  LocalDateTime startDate, LocalDateTime endDate) {
         User admin = userRepository.findByUsername(adminUsername)
-                .orElseThrow(() -> new CustomException("Admin not found", HttpStatus.NOT_FOUND));
+                .orElseThrow(() -> new CustomException("管理员不存在", HttpStatus.NOT_FOUND));
         
         // 验证用户是否为管理员
-        if (admin.getRole() != User.Role.ADMIN) {
-            throw new CustomException("Unauthorized access", HttpStatus.FORBIDDEN);
+        if (!admin.getRole().isAdministrator()) {
+            throw new CustomException("无权访问", HttpStatus.FORBIDDEN);
         }
         
         // 如果指定了目标用户，则只查询该用户的对话历史
         if (targetUsername != null && !targetUsername.isEmpty()) {
             User targetUser = userRepository.findByUsername(targetUsername)
-                    .orElseThrow(() -> new CustomException("Target user not found", HttpStatus.NOT_FOUND));
+                    .orElseThrow(() -> new CustomException("目标用户不存在", HttpStatus.NOT_FOUND));
             
             if (startDate != null && endDate != null) {
                 return conversationRepository.findByUserIdAndTimestampBetween(

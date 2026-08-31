@@ -1,9 +1,13 @@
 package com.luky.nexusmind.agent;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.luky.nexusmind.client.DeepSeekClient;
 import com.luky.nexusmind.client.GenerationCancellation;
+import com.luky.nexusmind.service.AiTraceService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -27,7 +31,9 @@ public class AgentOrchestrator {
             你可以直接回答一般交流问题。用户询问其知识库内容时，应优先调用工具。
             用户问题包含指代时，结合对话历史将其改写为完整查询。
             用户知识库中的一般事实查询使用 search_knowledge_base；实体关系或跨文档关系使用 search_knowledge_graph；
-            已有片段上下文不完整时，使用 get_chunk_context。
+            已有片段上下文不完整时，使用 get_chunk_context；
+            用户询问知识库中有哪些文档、可以访问哪些文档或文档数量时，使用 list_knowledge_documents，根据返回清单精确回答，
+            不要用检索工具猜测文档列表，也不要依据 list_knowledge_documents 的清单臆测文档内容。
             检索词必须来自用户问题、对话历史或工具已返回的资料；不得凭空枚举未提及的内容类别。
             用户要求总结或概览整个知识库时，先使用用户的原问题检索，只能根据返回资料中出现的主题继续细化。
             知识库工具仅用于检索用户知识库内容，不具备联网或访问任何外部数据源的能力；
@@ -42,6 +48,7 @@ public class AgentOrchestrator {
     private final DeepSeekClient deepSeekClient;
     private final ToolRegistry toolRegistry;
     private final ObjectMapper objectMapper;
+    private final AiTraceService aiTraceService;
     private final boolean enabled;
     private final int maxToolRounds;
     private final int maxCallsPerRound;
@@ -49,12 +56,14 @@ public class AgentOrchestrator {
     public AgentOrchestrator(DeepSeekClient deepSeekClient,
                              ToolRegistry toolRegistry,
                              ObjectMapper objectMapper,
+                             AiTraceService aiTraceService,
                              @Value("${ai.agent.tool-calling-enabled:true}") boolean enabled,
                              @Value("${ai.agent.max-tool-rounds:3}") int maxToolRounds,
                              @Value("${ai.agent.max-calls-per-round:3}") int maxCallsPerRound) {
         this.deepSeekClient = deepSeekClient;
         this.toolRegistry = toolRegistry;
         this.objectMapper = objectMapper;
+        this.aiTraceService = aiTraceService;
         this.enabled = enabled;
         this.maxToolRounds = Math.max(1, Math.min(4, maxToolRounds));
         this.maxCallsPerRound = Math.max(1, Math.min(5, maxCallsPerRound));
@@ -115,18 +124,41 @@ public class AgentOrchestrator {
             for (ToolCall call : decision.toolCalls()) {
                 if (finishIfCancelled(cancellation, onComplete)) return;
                 onEvent.accept(AgentEvent.toolStarted(call));
+                AiTraceService.TraceSpan toolSpan = aiTraceService.startSpan(
+                        "agent.tool.execute", context.traceUserId(), null, null)
+                        .attribute("nexusmind.agent.tool.name", call.name())
+                        .attribute("nexusmind.agent.tool.call_id", call.id());
                 long started = System.nanoTime();
                 ToolResult result;
-                if (callsThisRound++ >= maxCallsPerRound) {
-                    result = limitedResult(call);
-                } else if (!executedCalls.add(call.name() + ":" + call.rawArguments())) {
-                    result = duplicateResult(call);
-                } else {
-                    executedThisRound++;
-                    result = toolRegistry.execute(call, context);
+                long durationMs;
+                try {
+                    if (callsThisRound++ >= maxCallsPerRound) {
+                        result = limitedResult(call);
+                    } else if (!executedCalls.add(call.name() + ":" + call.rawArguments())) {
+                        result = duplicateResult(call);
+                    } else {
+                        executedThisRound++;
+                        result = toolRegistry.execute(call, context);
+                    }
+                    durationMs = (System.nanoTime() - started) / 1_000_000;
+                    toolSpan.attribute("nexusmind.agent.tool.success", result.success())
+                            .attribute("nexusmind.agent.tool.result_count", result.resultCount())
+                            .attribute("nexusmind.agent.tool.took_ms", durationMs);
+                    if (aiTraceService.shouldCaptureContent()) {
+                        String toolOutput = summarizeToolOutput(result.content());
+                        toolSpan.attribute("input.value", abbreviate(call.rawArguments(), 2000))
+                                .attribute("langfuse.observation.input", abbreviate(call.rawArguments(), 2000))
+                                .attribute("output.value", toolOutput)
+                                .attribute("langfuse.observation.output", toolOutput);
+                    }
+                } catch (RuntimeException e) {
+                    toolSpan.error(e);
+                    throw e;
+                } finally {
+                    toolSpan.end();
+                    toolSpan.close();
                 }
                 if (finishIfCancelled(cancellation, onComplete)) return;
-                long durationMs = (System.nanoTime() - started) / 1_000_000;
                 onEvent.accept(AgentEvent.toolCompleted(call, result.resultCount(), durationMs, result.success()));
                 Map<String, Object> toolMessage = new LinkedHashMap<>();
                 toolMessage.put("role", "tool");
@@ -246,6 +278,59 @@ public class AgentOrchestrator {
             if (!pending.isEmpty()) downstream.accept(pending.toString());
             pending.setLength(0);
             onComplete.run();
+        }
+    }
+
+    private static String abbreviate(String value, int maxLength) {
+        if (value == null) {
+            return "";
+        }
+        return value.length() <= maxLength ? value : value.substring(0, maxLength) + "…";
+    }
+
+    /**
+     * 工具输出的可读摘要：保留 status/query 等标量字段，sources 每条只留来源定位信息 + 200 字内容预览，
+     * 输出为格式化 JSON（原先直接截断压缩 JSON 会导致前端拿到断掉的非法 JSON 无法排版）。
+     */
+    private String summarizeToolOutput(JsonNode content) {
+        try {
+            if (content == null || !content.isObject()) {
+                return abbreviate(String.valueOf(content), 4000);
+            }
+            ObjectNode summary = objectMapper.createObjectNode();
+            for (Map.Entry<String, JsonNode> field : content.properties()) {
+                if ("sources".equals(field.getKey()) || "documents".equals(field.getKey())) continue;
+                summary.set(field.getKey(), field.getValue().deepCopy());
+            }
+            summarizeEntries(summary, content, "sources", 10);
+            summarizeEntries(summary, content, "documents", 10);
+            return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(summary);
+        } catch (Exception e) {
+            return abbreviate(String.valueOf(content), 4000);
+        }
+    }
+
+    /**
+     * 将 content 中指定数组字段的摘要写入 summary：保留定位字段（sourceId/fileMd5/fileName 等）与内容预览，
+     * 超出 limit 的条目以 xxx_omitted 计数标注。
+     */
+    private void summarizeEntries(ObjectNode summary, JsonNode content, String field, int limit) {
+        JsonNode entries = content.path(field);
+        if (!entries.isArray() || entries.isEmpty()) return;
+        ArrayNode summarized = summary.putArray(field);
+        int kept = Math.min(entries.size(), limit);
+        for (int i = 0; i < kept; i++) {
+            JsonNode entry = entries.get(i);
+            ObjectNode node = summarized.addObject();
+            for (String key : new String[] {"sourceId", "fileMd5", "fileName", "chunkId", "score",
+                    "orgTag", "isPublic", "sizeBytes", "uploadedAt"}) {
+                if (entry.hasNonNull(key)) node.set(key, entry.get(key).deepCopy());
+            }
+            String text = entry.path("content").asText("");
+            if (!text.isEmpty()) node.put("content", text.length() > 200 ? text.substring(0, 200) + "…" : text);
+        }
+        if (entries.size() > kept) {
+            summary.put(field + "_omitted", entries.size() - kept);
         }
     }
 }

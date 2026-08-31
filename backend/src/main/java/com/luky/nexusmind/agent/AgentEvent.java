@@ -47,6 +47,7 @@ public record AgentEvent(
             case "search_knowledge_base" -> "检索知识库";
             case "search_knowledge_graph" -> "查询知识图谱";
             case "get_chunk_context" -> "补充相邻内容";
+            case "list_knowledge_documents" -> "列出知识库文档";
             default -> "调用工具";
         };
     }
@@ -56,6 +57,7 @@ public record AgentEvent(
             case "search_knowledge_base" -> "问题涉及知识库内容，正在查找相关文档片段";
             case "search_knowledge_graph" -> "问题涉及实体关系，正在查找跨文档关联路径";
             case "get_chunk_context" -> "现有片段上下文不完整，正在读取前后相邻内容";
+            case "list_knowledge_documents" -> "问题要求列出或统计知识库文档，正在获取可访问文档清单";
             default -> "正在执行受控的只读工具";
         };
     }
@@ -66,6 +68,7 @@ public record AgentEvent(
             case "search_knowledge_base" -> "找到 " + count + " 个相关文档片段";
             case "search_knowledge_graph" -> "找到 " + count + " 条关系路径";
             case "get_chunk_context" -> "补充了 " + count + " 个相邻片段";
+            case "list_knowledge_documents" -> "获取到 " + count + " 个可访问文档";
             default -> "工具执行完成";
         };
     }

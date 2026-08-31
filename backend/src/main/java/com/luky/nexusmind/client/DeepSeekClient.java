@@ -15,6 +15,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import com.luky.nexusmind.config.AiProperties;
@@ -82,11 +84,13 @@ public class DeepSeekClient {
             span.attribute("gen_ai.request.max_tokens", value.longValue());
         }
         if (aiTraceService.shouldCaptureContent()) {
-            span.attribute("gen_ai.prompt", abbreviate(userMessage, 2000));
+            span.attribute("gen_ai.prompt", abbreviate(userMessage, 2000))
+                    .attribute("langfuse.observation.input", abbreviate(userMessage, 2000));
         }
 
         AtomicLong responseChars = new AtomicLong();
         AtomicReference<Usage> usage = new AtomicReference<>();
+        StringBuilder completionCapture = aiTraceService.shouldCaptureContent() ? new StringBuilder() : null;
 
         try {
             webClient.post()
@@ -100,11 +104,13 @@ public class DeepSeekClient {
                     .subscribe(
                             chunk -> processChunk(chunk, content -> {
                                 responseChars.addAndGet(content.length());
+                                appendCapturedContent(completionCapture, content);
                                 onChunk.accept(content);
                             }, usage::set),
                             error -> {
                                 span.attribute("gen_ai.response.output_chars", responseChars.get());
                                 applyUsageAttributes(span, usage.get());
+                                captureCompletion(span, completionCapture);
                                 span.error(error);
                                 span.end();
                                 onError.accept(error);
@@ -112,6 +118,7 @@ public class DeepSeekClient {
                             () -> {
                                 span.attribute("gen_ai.response.output_chars", responseChars.get());
                                 applyUsageAttributes(span, usage.get());
+                                captureCompletion(span, completionCapture);
                                 span.end();
                                 onComplete.run();
                             });
@@ -148,8 +155,18 @@ public class DeepSeekClient {
         AiTraceService.TraceSpan span = aiTraceService.startSpan(
                         "llm.agent.tool_decision", userId, sessionId, conversationId)
                 .attribute("langfuse.observation.type", "generation")
+                .attribute("langfuse.observation.model.name", modelConfig.modelName())
                 .attribute("gen_ai.request.model", modelConfig.modelName())
                 .attribute("nexusmind.agent.tool.count", tools.size());
+        if (aiTraceService.shouldCaptureContent()) {
+            try {
+                String input = truncateMessagesJson(messages);
+                span.attribute("input.value", input)
+                        .attribute("langfuse.observation.input", input);
+            } catch (Exception ignored) {
+                // 消息序列化失败不影响调用
+            }
+        }
         try {
             String response = buildWebClient(modelConfig).post()
                     .uri("/chat/completions")
@@ -161,8 +178,8 @@ public class DeepSeekClient {
                     .block(AGENT_DECISION_TIMEOUT);
             if (cancellation.isCancelled()) throw new CancellationException("生成已取消");
             if (response == null || response.isBlank()) throw new IllegalStateException("模型返回空响应");
-            JsonNode message = new ObjectMapper().readTree(response)
-                    .path("choices").path(0).path("message");
+            JsonNode root = new ObjectMapper().readTree(response);
+            JsonNode message = root.path("choices").path(0).path("message");
             if (message.isMissingNode() || message.isNull()) throw new IllegalStateException("模型响应缺少 message");
             List<ToolCall> calls = new ArrayList<>();
             for (JsonNode call : message.path("tool_calls")) {
@@ -173,6 +190,8 @@ public class DeepSeekClient {
                 if (!id.isBlank() && !name.isBlank()) calls.add(new ToolCall(id, name, arguments, rawArguments));
             }
             span.attribute("nexusmind.agent.tool_calls.count", calls.size());
+            // 非流式决策调用同样上报 token 用量，否则可观测页 Tokens 为空、成本无法归集
+            applyUsageAttributes(span, parseUsage(root.path("usage")));
             span.end();
             return new AgentDecision(message.deepCopy(), calls);
         } catch (CancellationException e) {
@@ -231,9 +250,11 @@ public class DeepSeekClient {
         AiTraceService.TraceSpan span = aiTraceService.startSpan(
                         "llm.agent.stream", userId, sessionId, conversationId)
                 .attribute("langfuse.observation.type", "generation")
+                .attribute("langfuse.observation.model.name", modelName)
                 .attribute("gen_ai.request.model", modelName);
         AtomicLong responseChars = new AtomicLong();
         AtomicReference<Usage> usage = new AtomicReference<>();
+        StringBuilder completionCapture = aiTraceService.shouldCaptureContent() ? new StringBuilder() : null;
         try {
             webClient.post().uri("/chat/completions")
                     .contentType(MediaType.APPLICATION_JSON)
@@ -242,11 +263,13 @@ public class DeepSeekClient {
                     .takeUntilOther(cancellation.signal())
                     .subscribe(chunk -> processChunk(chunk, content -> {
                                 responseChars.addAndGet(content.length());
+                                appendCapturedContent(completionCapture, content);
                                 onChunk.accept(content);
                             }, usage::set),
                             error -> {
                                 span.attribute("gen_ai.response.output_chars", responseChars.get());
                                 applyUsageAttributes(span, usage.get());
+                                captureCompletion(span, completionCapture);
                                 span.error(error);
                                 span.end();
                                 onError.accept(error);
@@ -254,6 +277,7 @@ public class DeepSeekClient {
                             () -> {
                                 span.attribute("gen_ai.response.output_chars", responseChars.get());
                                 applyUsageAttributes(span, usage.get());
+                                captureCompletion(span, completionCapture);
                                 span.end();
                                 onComplete.run();
                             });
@@ -508,5 +532,42 @@ public class DeepSeekClient {
             return value;
         }
         return value.substring(0, maxLength) + "...";
+    }
+
+    /** 追加流式内容到采集缓冲（超过上限后丢弃，避免大响应撑爆 span 属性） */
+    private static void appendCapturedContent(StringBuilder capture, String content) {
+        if (capture != null && content != null && capture.length() < 8000) {
+            capture.append(content);
+        }
+    }
+
+    /** 将采集到的模型输出写入 span（gen_ai.completion 为 Langfuse 识别的输出映射属性） */
+    private void captureCompletion(AiTraceService.TraceSpan span, StringBuilder capture) {
+        if (capture != null) {
+            String output = abbreviate(capture.toString(), 4000);
+            span.attribute("gen_ai.completion", output)
+                    .attribute("langfuse.observation.output", output);
+        }
+    }
+
+    /**
+     * 决策输入捕获：逐条截断消息内容但整体保持合法 JSON。
+     * 直接对序列化后的 JSON 串截断会得到非法 JSON，前端无法按层级展开。
+     */
+    private String truncateMessagesJson(List<Map<String, Object>> messages) throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        ArrayNode captured = mapper.createArrayNode();
+        for (Map<String, Object> message : messages) {
+            ObjectNode node = captured.addObject();
+            for (Map.Entry<String, Object> field : message.entrySet()) {
+                Object value = field.getValue();
+                if (value instanceof String text) {
+                    node.put(field.getKey(), text.length() > 800 ? text.substring(0, 800) + "…(已截断)" : text);
+                } else if (value != null) {
+                    node.set(field.getKey(), mapper.valueToTree(value));
+                }
+            }
+        }
+        return mapper.writerWithDefaultPrettyPrinter().writeValueAsString(captured);
     }
 }

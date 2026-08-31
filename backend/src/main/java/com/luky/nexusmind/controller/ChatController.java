@@ -58,7 +58,7 @@ public class ChatController extends TextWebSocketHandler {
             if (cmdToken == null || cmdToken.trim().isEmpty()) {
                 return ResponseEntity.status(500).body(Map.of(
                     "code", 500,
-                    "message", "Token生成失败",
+                    "message", "令牌生成失败",
                     "data", null
                 ));
             }

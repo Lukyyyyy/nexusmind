@@ -107,7 +107,7 @@ async function handleDelete(sessionId: number) {
       </div>
     </div>
 
-    <NSpin v-if="!collapsed" :show="sessionLoading">
+    <NSpin v-if="!collapsed" :show="sessionLoading" class="chat-list__spin" content-class="chat-list__spin-content">
       <NScrollbar class="chat-list__scroll">
         <div class="chat-list__sessions">
           <button
@@ -172,6 +172,8 @@ async function handleDelete(sessionId: number) {
 
 <style scoped lang="scss">
 .chat-list {
+  display: flex;
+  flex-direction: column;
   width: 264px;
   border-color: #e4e9f0;
   background: #fff;
@@ -188,11 +190,21 @@ async function handleDelete(sessionId: number) {
   padding-left: 0;
 }
 
+.chat-list__spin {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.chat-list__spin :deep(.n-spin-content) {
+  height: 100%;
+}
+
 .chat-list__scroll {
-  height: calc(100vh - 188px);
+  height: 100%;
 }
 
 .chat-list__header {
+  flex-shrink: 0;
   margin-bottom: 8px;
   padding: 0 2px;
 }

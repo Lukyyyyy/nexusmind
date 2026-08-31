@@ -137,7 +137,8 @@ public class ChatHandler {
             traceSpan = aiTraceService.startSpan("rag.chat", effectiveTraceUserId, session.getId(), conversationId)
                     .attribute("nexusmind.input.length", userMessage != null ? userMessage.length() : 0);
             if (aiTraceService.shouldCaptureContent()) {
-                traceSpan.attribute("input.value", abbreviate(userMessage, 2000));
+                traceSpan.attribute("input.value", abbreviate(userMessage, 2000))
+                        .attribute("langfuse.observation.input", abbreviate(userMessage, 2000));
             }
             final AiTraceService.TraceSpan currentTrace = traceSpan;
             
@@ -199,25 +200,10 @@ public class ChatHandler {
                 }
             }
             
-            // 3. 执行带权限过滤的混合搜索
-            List<SearchResult> searchResults;
-            AiTraceService.TraceSpan searchSpan = aiTraceService.startSpan(
-                    "rag.hybrid_search", effectiveTraceUserId, session.getId(), conversationId)
-                    .attribute("nexusmind.search.top_k", 5)
-                    .attribute("nexusmind.search.query.length", userMessage != null ? userMessage.length() : 0);
-            try {
-                searchResults = searchService.searchWithPermission(
-                        userMessage, userId, 5,
-                        scopeFiles.stream().map(FileUpload::getFileMd5).collect(java.util.stream.Collectors.toSet()));
-                searchSpan.attribute("nexusmind.search.results.count", searchResults.size());
-            } catch (RuntimeException e) {
-                searchSpan.error(e);
-                currentTrace.error(e);
-                throw e;
-            } finally {
-                searchSpan.end();
-                searchSpan.close();
-            }
+            // 3. 执行带权限过滤的混合搜索（rag.hybrid_search span 在 HybridSearchService 内部创建并携带 RRF/重排属性）
+            List<SearchResult> searchResults = searchService.searchWithPermission(
+                    userMessage, effectiveTraceUserId, ModelConfigService.STANDARD_FINAL_TOP_K,
+                    scopeFiles.stream().map(FileUpload::getFileMd5).collect(java.util.stream.Collectors.toSet()));
             logger.debug("搜索结果数量: {}", searchResults.size());
             if (cancellation.isCancelled()) {
                 completeCancelled(session, currentTrace, traceFinished, cancellation);
@@ -327,7 +313,8 @@ public class ChatHandler {
             if (!completeResponse.equals(rawResponse)) sendContentReplacement(session, completeResponse);
             currentTrace.attribute("output.length", completeResponse.length());
             if (aiTraceService.shouldCaptureContent()) {
-                currentTrace.attribute("output.value", abbreviate(completeResponse, 2000));
+                currentTrace.attribute("output.value", abbreviate(completeResponse, 2000))
+                        .attribute("langfuse.observation.output", abbreviate(completeResponse, 2000));
             }
             currentTrace.attribute("nexusmind.llm.stream.completed", true)
                     .attribute("nexusmind.trace.end_reason", "llm_stream_complete");
@@ -543,7 +530,9 @@ public class ChatHandler {
     private void handleError(WebSocketSession session, Throwable error) {
         logger.error("AI服务错误: {}", error.getMessage(), error);
         try {
-            Map<String, String> errorResponse = Map.of("error", "AI服务暂时不可用，请稍后重试");
+            String detail = error.getMessage();
+            Map<String, String> errorResponse = Map.of("error",
+                    detail == null || detail.isBlank() ? "模型请求失败，请稍后重试" : "模型请求失败：" + detail);
             String errorJson = objectMapper.writeValueAsString(errorResponse);
             logger.error("发送错误消息到会话 {}: {}", session.getId(), errorJson);
             sendMessage(session, errorJson);

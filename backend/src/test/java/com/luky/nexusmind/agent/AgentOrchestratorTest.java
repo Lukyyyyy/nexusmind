@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.luky.nexusmind.client.DeepSeekClient;
 import com.luky.nexusmind.client.GenerationCancellation;
 import com.luky.nexusmind.agent.tool.AgentTool;
+import com.luky.nexusmind.service.AiTraceService;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -17,6 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AgentOrchestratorTest {
+    private static final AiTraceService TRACE = new AiTraceService(false, "", "", "", "test", false);
 
     @Test
     void answeringStepComesAfterAllToolRounds() {
@@ -32,7 +34,7 @@ class AgentOrchestratorTest {
                         .put("role", "assistant").put("content", "最终回答"), List.of())));
         ToolRegistry tools = new ToolRegistry(List.of(), objectMapper);
 
-        AgentOrchestrator orchestrator = new AgentOrchestrator(client, tools, objectMapper, true, 3, 3);
+        AgentOrchestrator orchestrator = new AgentOrchestrator(client, tools, objectMapper, TRACE, true, 3, 3);
         List<AgentEvent> events = new ArrayList<>();
         List<String> chunks = new ArrayList<>();
         orchestrator.run("alice", "有哪些文档？", List.of(),
@@ -68,7 +70,8 @@ class AgentOrchestratorTest {
             }
         };
         AgentOrchestrator orchestrator = new AgentOrchestrator(
-                client, new ToolRegistry(List.of(searchTool), objectMapper), objectMapper, true, 3, 3);
+                client, new ToolRegistry(List.of(searchTool), objectMapper), objectMapper,
+                TRACE, true, 3, 3);
 
         assertThrows(IllegalStateException.class, () -> orchestrator.run(
                 "alice", "深圳今天天气怎么样？", List.of(),
@@ -87,7 +90,7 @@ class AgentOrchestratorTest {
                         objectMapper.createObjectNode().put("role", "assistant"), List.of(call))),
                 List.of("<|DS", "ML|tool_calls>"));
         AgentOrchestrator orchestrator = new AgentOrchestrator(
-                client, new ToolRegistry(List.of(), objectMapper), objectMapper, true, 1, 3);
+                client, new ToolRegistry(List.of(), objectMapper), objectMapper, TRACE, true, 1, 3);
         List<AgentEvent> events = new ArrayList<>();
         List<String> chunks = new ArrayList<>();
         List<Throwable> errors = new ArrayList<>();
@@ -131,7 +134,7 @@ class AgentOrchestratorTest {
             }
         };
         AgentOrchestrator orchestrator = new AgentOrchestrator(
-                client, new ToolRegistry(List.of(tool), objectMapper), objectMapper, true, 3, 3);
+                client, new ToolRegistry(List.of(tool), objectMapper), objectMapper, TRACE, true, 3, 3);
 
         orchestrator.run("alice", "总结知识库", List.of(),
                 new AgentContext("alice", 1L, "ws-1", "1", List.of(), List.of()),
@@ -146,7 +149,7 @@ class AgentOrchestratorTest {
         ObjectMapper objectMapper = new ObjectMapper();
         StubDeepSeekClient client = new StubDeepSeekClient(List.of());
         AgentOrchestrator orchestrator = new AgentOrchestrator(
-                client, new ToolRegistry(List.of(), objectMapper), objectMapper, true, 3, 3);
+                client, new ToolRegistry(List.of(), objectMapper), objectMapper, TRACE, true, 3, 3);
         GenerationCancellation cancellation = new GenerationCancellation();
         cancellation.cancel();
         boolean[] completed = { false };
