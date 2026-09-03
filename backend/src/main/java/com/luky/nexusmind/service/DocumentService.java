@@ -60,6 +60,9 @@ public class DocumentService {
     @Autowired
     private MinioClient minioClient;
 
+    @Value("${minio.bucketName:uploads}")
+    private String minioBucketName = "uploads";
+
     @Autowired
     private ElasticsearchService elasticsearchService;
 
@@ -114,7 +117,7 @@ public class DocumentService {
                 String objectName = "merged/" + fileUpload.getFileName();
                 minioClient.removeObject(
                         RemoveObjectArgs.builder()
-                                .bucket("uploads")
+                                .bucket(minioBucketName)
                                 .object(objectName)
                                 .build()
                 );
@@ -404,7 +407,7 @@ public class DocumentService {
             String presignedUrl = minioClient.getPresignedObjectUrl(
                     GetPresignedObjectUrlArgs.builder()
                             .method(Method.GET)
-                            .bucket("uploads")
+                            .bucket(minioBucketName)
                             .object(objectName)
                             .expiry(3600) // 1小时有效期
                             .build()
@@ -432,7 +435,7 @@ public class DocumentService {
             String objectName = "merged/" + fileName;
             return minioClient.getObject(
                     GetObjectArgs.builder()
-                            .bucket("uploads")
+                            .bucket(minioBucketName)
                             .object(objectName)
                             .build());
         } catch (Exception e) {
@@ -462,7 +465,7 @@ public class DocumentService {
             if (isPreviewableFile) {
                 try (InputStream inputStream = minioClient.getObject(
                         GetObjectArgs.builder()
-                                .bucket("uploads")
+                                .bucket(minioBucketName)
                                 .object(objectName)
                                 .build())) {
 

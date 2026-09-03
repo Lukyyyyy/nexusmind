@@ -14,6 +14,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
@@ -36,6 +37,9 @@ public class UploadService {
     // 用于与 MinIO 服务器交互
     @Autowired
     private MinioClient minioClient;
+
+    @Value("${minio.bucketName:uploads}")
+    private String minioBucketName = "uploads";
 
     // 用于操作文件上传记录的 Repository
     @Autowired
@@ -155,7 +159,7 @@ public class UploadService {
                     try {
                         StatObjectResponse stat = minioClient.statObject(
                             StatObjectArgs.builder()
-                                .bucket("uploads")
+                                .bucket(minioBucketName)
                                 .object(storagePath)
                                 .build()
                         );
@@ -191,7 +195,7 @@ public class UploadService {
                               fileMd5, fileName, fileType, chunkIndex, storagePath, file.getSize(), contentType);
                     
                     PutObjectArgs putObjectArgs = PutObjectArgs.builder()
-                            .bucket("uploads")
+                            .bucket(minioBucketName)
                             .object(storagePath)
                             .stream(file.getInputStream(), file.getSize(), -1)
                             .contentType(file.getContentType())
@@ -604,7 +608,7 @@ public class UploadService {
             logger.info("开始检查每个分片是否存在 => fileMd5: {}, fileName: {}, fileType: {}", fileMd5, fileName, fileType);
             AiTraceService.TraceSpan statSpan = aiTraceService.startFileSpan("upload.merge.stat_chunks", userId, fileMd5, fileName)
                     .attribute("storage.system", "minio")
-                    .attribute("storage.bucket", "uploads")
+                    .attribute("storage.bucket", minioBucketName)
                     .attribute("nexusmind.upload.chunk.count", partPaths.size());
             try {
                 for (int i = 0; i < partPaths.size(); i++) {
@@ -612,7 +616,7 @@ public class UploadService {
                     try {
                         StatObjectResponse stat = minioClient.statObject(
                             StatObjectArgs.builder()
-                                .bucket("uploads")
+                                .bucket(minioBucketName)
                                 .object(path)
                                 .build()
                         );
@@ -636,20 +640,20 @@ public class UploadService {
             try {
                 // 合并分片
                 List<ComposeSource> sources = partPaths.stream()
-                        .map(path -> ComposeSource.builder().bucket("uploads").object(path).build())
+                        .map(path -> ComposeSource.builder().bucket(minioBucketName).object(path).build())
                         .collect(Collectors.toList());
                 
                 logger.debug("构建合并请求 => fileMd5: {}, fileName: {}, targetPath: {}, sourcePaths: {}", 
                           fileMd5, fileName, mergedPath, partPaths);
                 AiTraceService.TraceSpan composeSpan = aiTraceService.startFileSpan("upload.merge.minio_compose", userId, fileMd5, fileName)
                         .attribute("storage.system", "minio")
-                        .attribute("storage.bucket", "uploads")
+                        .attribute("storage.bucket", minioBucketName)
                         .attribute("storage.object", mergedPath)
                         .attribute("nexusmind.upload.chunk.count", sources.size());
                 try {
                     minioClient.composeObject(
                             ComposeObjectArgs.builder()
-                                    .bucket("uploads")
+                                    .bucket(minioBucketName)
                                     .object(mergedPath)
                                     .sources(sources)
                                     .build()
@@ -666,7 +670,7 @@ public class UploadService {
                 // 检查合并后的文件
                 StatObjectResponse stat = minioClient.statObject(
                     StatObjectArgs.builder()
-                        .bucket("uploads")
+                        .bucket(minioBucketName)
                         .object(mergedPath)
                         .build()
                 );
@@ -676,14 +680,14 @@ public class UploadService {
                 logger.info("开始清理分片文件 => fileMd5: {}, fileName: {}, 分片数量: {}", fileMd5, fileName, partPaths.size());
                 AiTraceService.TraceSpan cleanupSpan = aiTraceService.startFileSpan("upload.merge.cleanup_chunks", userId, fileMd5, fileName)
                         .attribute("storage.system", "minio")
-                        .attribute("storage.bucket", "uploads")
+                        .attribute("storage.bucket", minioBucketName)
                         .attribute("nexusmind.upload.chunk.count", partPaths.size());
                 int cleanupFailed = 0;
                 for (String path : partPaths) {
                     try {
                         minioClient.removeObject(
                                 RemoveObjectArgs.builder()
-                                        .bucket("uploads")
+                                        .bucket(minioBucketName)
                                         .object(path)
                                         .build()
                         );
@@ -742,7 +746,7 @@ public class UploadService {
                 String presignedUrl = minioClient.getPresignedObjectUrl(
                         GetPresignedObjectUrlArgs.builder()
                                 .method(Method.GET)
-                                .bucket("uploads")
+                                .bucket(minioBucketName)
                                 .object(mergedPath)
                                 .expiry(1, TimeUnit.HOURS) // 设置有效期为 1 小时
                                 .build()
@@ -777,14 +781,14 @@ public class UploadService {
         try {
             minioClient.statObject(
                     StatObjectArgs.builder()
-                            .bucket("uploads")
+                            .bucket(minioBucketName)
                             .object(mergedPath)
                             .build()
             );
             return minioClient.getPresignedObjectUrl(
                     GetPresignedObjectUrlArgs.builder()
                             .method(Method.GET)
-                            .bucket("uploads")
+                            .bucket(minioBucketName)
                             .object(mergedPath)
                             .expiry(1, TimeUnit.HOURS)
                             .build()
