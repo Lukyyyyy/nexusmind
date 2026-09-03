@@ -14,12 +14,12 @@ import org.springframework.stereotype.Component;
 import java.time.format.DateTimeFormatter;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 
 /**
- * 枚举当前用户有权限访问的知识库文档清单。
+ * 枚举当前会话问答范围内的知识库文档清单。
  * 语义检索工具无法精确回答“知识库中有哪些文档”类问题，由本工具提供精确清单与统计。
- * 权限口径与 DocumentService.getAccessibleFiles（知识库页面“可访问文件”）一致：
- * 本人上传 + 公开 + 所属组织（含层级），管理员可见全部；仅统计已完成解析、可被检索的文档。
+ * 返回结果同时受用户访问权限和会话有效文档集合约束；仅统计已完成解析、可被检索的文档。
  */
 @Component
 public class DocumentListTool implements AgentTool {
@@ -40,14 +40,17 @@ public class DocumentListTool implements AgentTool {
         schema.set("properties", mapper.createObjectNode());
         schema.set("required", mapper.createArrayNode());
         return new ToolDefinition("list_knowledge_documents",
-                "列出当前用户有权限访问的知识库文档清单（文件名、所属组织、是否公开、大小、上传时间）。"
+                "列出当前会话问答范围内的知识库文档清单（文件名、所属组织、是否公开、大小、上传时间）。"
                         + "当用户询问知识库中有哪些文档、可以访问哪些文档或文档数量时使用；仅枚举文档清单，不要用于内容检索。"
                         + "清单只包含已完成解析、当前可被检索的文档。", schema);
     }
 
     @Override
     public ToolResult execute(String callId, JsonNode arguments, AgentContext context) {
-        List<FileUpload> accessible = documentService.getAccessibleFiles(context.traceUserId(), null);
+        Set<Long> scopeFileIds = Set.copyOf(context.scopeFileIds());
+        List<FileUpload> accessible = documentService.getAccessibleFiles(context.traceUserId(), null).stream()
+                .filter(file -> scopeFileIds.contains(file.getId()))
+                .toList();
         List<FileUpload> ready = accessible.stream()
                 .filter(file -> file.getStatus() == 1)
                 .sorted(Comparator.comparing(FileUpload::getCreatedAt,

@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.mock;
@@ -19,11 +20,10 @@ class DocumentListToolTest {
     private final ObjectMapper mapper = new ObjectMapper();
     private final DocumentService documentService = mock(DocumentService.class);
     private final DocumentListTool tool = new DocumentListTool(documentService, mapper);
-    private final AgentContext context = new AgentContext("alice", 1L, "ws-1", "42");
-
     private FileUpload file(String fileName, String fileMd5, String orgTag, boolean isPublic,
                             int status, LocalDateTime createdAt) {
         FileUpload file = new FileUpload();
+        file.setId(Long.parseLong(fileMd5.substring(fileMd5.length() - 15), 16));
         file.setFileName(fileName);
         file.setFileMd5(fileMd5);
         file.setOrgTag(orgTag);
@@ -34,16 +34,23 @@ class DocumentListToolTest {
         return file;
     }
 
+    private AgentContext context(List<FileUpload> files) {
+        return new AgentContext("alice", 1L, "ws-1", "42",
+                files.stream().map(FileUpload::getId).toList(),
+                files.stream().map(FileUpload::getFileMd5).collect(java.util.stream.Collectors.toSet()));
+    }
+
     @Test
     void listsOnlyReadyDocumentsWithMetadataAndProcessingCount() {
         LocalDateTime newer = LocalDateTime.of(2026, 8, 30, 10, 0);
         LocalDateTime older = LocalDateTime.of(2026, 8, 1, 9, 30);
-        when(documentService.getAccessibleFiles("42", null)).thenReturn(List.of(
+        List<FileUpload> files = List.of(
                 file("新文档.pdf", "a".repeat(32), "研发部", true, 1, newer),
                 file("处理中.pdf", "b".repeat(32), "研发部", false, 0, newer),
-                file("旧文档.docx", "c".repeat(32), "default", false, 1, older)));
+                file("旧文档.docx", "c".repeat(32), "default", false, 1, older));
+        when(documentService.getAccessibleFiles("42", null)).thenReturn(files);
 
-        ToolResult result = tool.execute("call-1", mapper.createObjectNode(), context);
+        ToolResult result = tool.execute("call-1", mapper.createObjectNode(), context(files));
         JsonNode output = result.content();
 
         assertTrue(result.success());
@@ -70,7 +77,7 @@ class DocumentListToolTest {
         }
         when(documentService.getAccessibleFiles("42", null)).thenReturn(files);
 
-        ToolResult result = tool.execute("call-2", mapper.createObjectNode(), context);
+        ToolResult result = tool.execute("call-2", mapper.createObjectNode(), context(files));
 
         assertEquals(130, result.resultCount());
         JsonNode output = result.content();
@@ -82,12 +89,30 @@ class DocumentListToolTest {
     }
 
     @Test
+    void listsOnlyDocumentsInTheEffectiveSessionScope() {
+        LocalDateTime createdAt = LocalDateTime.of(2026, 9, 4, 10, 0);
+        FileUpload selected = file("所选文档.pdf", "a".repeat(32), "研发部", false, 1, createdAt);
+        FileUpload sameOrganization = file("同组织文档.pdf", "b".repeat(32), "研发部", false, 1, createdAt);
+        FileUpload outside = file("其他文档.pdf", "c".repeat(32), "其他部门", false, 1, createdAt);
+        when(documentService.getAccessibleFiles("42", null)).thenReturn(List.of(selected, sameOrganization, outside));
+
+        AgentContext scopedContext = new AgentContext("alice", 1L, "ws-1", "42",
+                List.of(selected.getId(), sameOrganization.getId()),
+                Set.of(selected.getFileMd5(), sameOrganization.getFileMd5()));
+        ToolResult result = tool.execute("call-scoped", mapper.createObjectNode(), scopedContext);
+
+        assertEquals(2, result.resultCount());
+        assertEquals(List.of("所选文档.pdf", "同组织文档.pdf"),
+                mapper.convertValue(result.content().path("documents").findValues("fileName"), List.class));
+    }
+
+    @Test
     void definitionRequiresNoArgumentsAndExplainsUsage() {
         ToolDefinition definition = tool.definition();
 
         assertEquals("list_knowledge_documents", definition.name());
         assertEquals("object", definition.parameters().path("type").asText());
         assertTrue(definition.parameters().path("required").isEmpty());
-        assertTrue(definition.description().contains("清单"));
+        assertTrue(definition.description().contains("当前会话问答范围"));
     }
 }
