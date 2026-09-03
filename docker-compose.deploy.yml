@@ -1,0 +1,245 @@
+name: nexusmind
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+services:
+  elasticsearch:
+    build:
+      context: ./backend/docs/elasticsearch
+    image: nexusmind-elasticsearch:8.10.4-ik
+    container_name: nexusmind-elasticsearch
+    restart: unless-stopped
+    environment:
+      ELASTIC_PASSWORD: ${ELASTICSEARCH_PASSWORD:?run scripts/prepare-deployment.sh first}
+      discovery.type: single-node
+      xpack.license.self_generated.type: basic
+      xpack.security.enabled: "true"
+      xpack.security.enrollment.enabled: "false"
+      xpack.security.http.ssl.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    ports:
+      - "127.0.0.1:19200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -u elastic:$$ELASTIC_PASSWORD http://127.0.0.1:9200/_cluster/health >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    mem_limit: 1g
+    memswap_limit: 1152m
+    cpus: "0.80"
+    pids_limit: 256
+    networks: [internal]
+    logging: *default-logging
+
+  kafka:
+    image: bitnamilegacy/kafka:latest
+    container_name: nexusmind-kafka
+    restart: unless-stopped
+    environment:
+      KAFKA_CFG_NODE_ID: 0
+      KAFKA_CFG_PROCESS_ROLES: controller,broker
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 0@kafka:9093
+      KAFKA_CFG_LISTENERS: CONTROLLER://:9093,PLAINTEXT://:9092
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_HEAP_OPTS: -Xms128m -Xmx256m
+    volumes:
+      - kafka-data:/bitnami/kafka
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/127.0.0.1/9092'"]
+      interval: 15s
+      timeout: 8s
+      retries: 20
+      start_period: 60s
+    mem_limit: 512m
+    memswap_limit: 640m
+    cpus: "0.50"
+    pids_limit: 192
+    networks: [internal]
+    logging: *default-logging
+
+  kafka-init:
+    image: bitnamilegacy/kafka:latest
+    container_name: nexusmind-kafka-init
+    restart: "no"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-ec"]
+    command:
+      - |
+        for topic in file-processing-topic1 file-processing-dlt; do
+          /opt/bitnami/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --replication-factor 1 --partitions 1 --topic "$$topic"
+        done
+    mem_limit: 128m
+    memswap_limit: 160m
+    cpus: "0.25"
+    networks: [internal]
+    logging: *default-logging
+
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: nexusmind-neo4j
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?run scripts/prepare-deployment.sh first}
+      NEO4J_server_memory_heap_initial__size: 128m
+      NEO4J_server_memory_heap_max__size: 256m
+      NEO4J_server_memory_pagecache_size: 128m
+    volumes:
+      - neo4j-data:/data
+    ports:
+      - "127.0.0.1:17474:7474"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:7474/"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+    mem_limit: 512m
+    memswap_limit: 640m
+    cpus: "0.50"
+    pids_limit: 192
+    networks: [internal]
+    logging: *default-logging
+
+  mineru-api:
+    build:
+      context: ./backend/docs/mineru
+      args:
+        APT_MIRROR: https://mirrors.aliyun.com/debian
+    image: nexusmind-mineru:3.4.5-cpu
+    container_name: nexusmind-mineru
+    restart: unless-stopped
+    environment:
+      MINERU_MODEL_SOURCE: local
+      MINERU_DEVICE_MODE: cpu
+      MINERU_MODEL_DOWNLOAD_SOURCE: modelscope
+      MINERU_MODEL_DOWNLOAD_TYPE: pipeline
+      MINERU_API_MAX_CONCURRENT_REQUESTS: "1"
+      MINERU_HTTP_PROXY: ""
+      MINERU_HTTPS_PROXY: ""
+      MINERU_NO_PROXY: localhost,127.0.0.1
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    volumes:
+      - mineru-cache:/root/.cache
+      - mineru-output:/app/output
+    command: ["mineru-api", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "127.0.0.1:18000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/openapi.json"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 45m
+    mem_limit: 2560m
+    memswap_limit: 3072m
+    cpus: "1.25"
+    pids_limit: 384
+    networks: [internal]
+    logging: *default-logging
+
+  backend:
+    build:
+      context: ./backend
+    image: nexusmind-backend:local
+    container_name: nexusmind-backend
+    restart: unless-stopped
+    env_file:
+      - .env.deploy.local
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_FLYWAY_ENABLED: "true"
+      SPRING_FLYWAY_BASELINE_VERSION: "7"
+      JAVA_TOOL_OPTIONS: -Xms128m -Xmx384m -XX:+UseSerialGC -XX:MaxMetaspaceSize=160m -Dfile.encoding=UTF-8 -Duser.timezone=Asia/Shanghai
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DATABASE: 1
+      REDIS_PASSWORD: ""
+      MINIO_ENDPOINT: http://minio:9000
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      ELASTICSEARCH_HOST: elasticsearch
+      ELASTICSEARCH_PORT: 9200
+      NEO4J_URI: bolt://neo4j:7687
+      MINERU_BASE_URL: http://mineru-api:8000
+      MINERU_BACKEND: pipeline
+      MINERU_PARSE_METHOD: ${MINERU_PARSE_METHOD:-auto}
+      MINERU_OCR: "${MINERU_OCR:-true}"
+      MINERU_ENABLE_TABLE: "${MINERU_ENABLE_TABLE:-true}"
+      MINERU_ENABLE_FORMULA: "${MINERU_ENABLE_FORMULA:-true}"
+      KNOWLEDGE_GRAPH_ENABLED: "true"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      neo4j:
+        condition: service_healthy
+      mineru-api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:18081:18081"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:18081/actuator/health"]
+      interval: 15s
+      timeout: 8s
+      retries: 20
+      start_period: 90s
+    mem_limit: 640m
+    memswap_limit: 768m
+    cpus: "0.75"
+    pids_limit: 256
+    networks: [internal, shared-services]
+    logging: *default-logging
+
+  web:
+    build:
+      context: ./frontend
+    image: nexusmind-web:local
+    container_name: nexusmind-web
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:9527:80"
+    mem_limit: 64m
+    memswap_limit: 96m
+    cpus: "0.25"
+    pids_limit: 64
+    security_opt:
+      - no-new-privileges:true
+    networks: [internal, proxy]
+    logging: *default-logging
+
+networks:
+  internal:
+    name: nexusmind_internal
+  proxy:
+    external: true
+    name: server_proxy
+  shared-services:
+    external: true
+    name: shared_services
+
+volumes:
+  elasticsearch-data:
+  kafka-data:
+  neo4j-data:
+  mineru-cache:
+    external: true
+    name: nexusmind_mineru-cache
+  mineru-output:

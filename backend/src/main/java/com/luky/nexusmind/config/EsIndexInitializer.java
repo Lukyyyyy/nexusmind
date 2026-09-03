@@ -12,7 +12,6 @@ import org.apache.http.ConnectionClosedException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.file.Files;
 import java.nio.charset.StandardCharsets;
 import java.io.StringReader;
 
@@ -69,7 +68,7 @@ public class EsIndexInitializer implements CommandLineRunner {
      */
     private void createIndex() throws Exception {
         // 读取 JSON 文件内容
-        String mappingJson = new String(Files.readAllBytes(mappingResource.getFile().toPath()), StandardCharsets.UTF_8);
+        String mappingJson = mappingResource.getContentAsString(StandardCharsets.UTF_8);
 
         // 创建索引并应用映射
         CreateIndexRequest createIndexRequest = CreateIndexRequest.of(c -> c
