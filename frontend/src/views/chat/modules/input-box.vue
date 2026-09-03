@@ -197,7 +197,7 @@ function scrollToBottom() {
 const handleSend = async () => {
   //  判断是否正在发送, 如果发送中，则停止ai继续响应
   if (isSending.value) {
-    const { error, data } = await request<Api.Chat.Token>({ url: 'chat/websocket-token', baseURL: 'proxy-api' });
+    const { error, data } = await request<Api.Chat.Token>({ url: 'chat/websocket-token' });
     if (error) return;
 
     chatStore.wsSend(JSON.stringify({ type: 'stop', _internal_cmd_token: data.cmdToken }));

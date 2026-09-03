@@ -444,20 +444,22 @@ public class DocumentController {
     @GetMapping("/download")
     public ResponseEntity<?> downloadFileByName(
             @RequestParam String fileName,
-            @RequestParam(required = false) String token) {
+            @RequestParam(required = false) String token,
+            @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization) {
         
         LogUtils.PerformanceMonitor monitor = LogUtils.startPerformanceMonitor("DOWNLOAD_FILE_BY_NAME");
         try {
+            String resolvedToken = resolveToken(token, authorization);
             // 验证token并获取用户信息
             String userId = null;
             String orgTags = null;
             
-            if (token != null && !token.trim().isEmpty()) {
+            if (resolvedToken != null) {
                 try {
                     // 解析JWT token获取用户信息
                     // 注意：JWT中的sub字段存储用户名，userId字段存储用户ID（但有时可能存储的是用户名）
-                    userId = jwtUtils.extractUsernameFromToken(token);
-                    orgTags = jwtUtils.extractOrgTagsFromToken(token);
+                    userId = jwtUtils.extractUsernameFromToken(resolvedToken);
+                    orgTags = jwtUtils.extractOrgTagsFromToken(resolvedToken);
                 } catch (Exception e) {
                     LogUtils.logBusiness("DOWNLOAD_FILE_BY_NAME", "anonymous", "Token解析失败: fileName=%s", fileName);
                 }
