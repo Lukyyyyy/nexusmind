@@ -2,6 +2,7 @@ package com.luky.nexusmind.utils;
 
 import com.luky.nexusmind.model.User;
 import com.luky.nexusmind.repository.UserRepository;
+import com.luky.nexusmind.service.TokenCacheService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -13,6 +14,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.lenient;
 
 /**
@@ -24,6 +26,9 @@ public class JwtUtilsRefreshTest {
     @Mock
     private UserRepository userRepository;
 
+    @Mock
+    private TokenCacheService tokenCacheService;
+
     @InjectMocks
     private JwtUtils jwtUtils;
 
@@ -33,7 +38,7 @@ public class JwtUtilsRefreshTest {
     @BeforeEach
     void setUp() {
         // 设置测试用的密钥
-        ReflectionTestUtils.setField(jwtUtils, "secretKeyBase64", testSecretKey);
+        ReflectionTestUtils.setField(jwtUtils, "secretKey", testSecretKey);
         
         // 创建测试用户
         testUser = new User();
@@ -45,6 +50,7 @@ public class JwtUtilsRefreshTest {
 
         // Mock用户仓库行为 (使用lenient模式避免不必要的stubbing警告)
         lenient().when(userRepository.findByUsername("testuser")).thenReturn(Optional.of(testUser));
+        lenient().when(tokenCacheService.isTokenValid(anyString())).thenReturn(true);
     }
 
     @Test

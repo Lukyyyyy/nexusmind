@@ -37,6 +37,7 @@ class ConversationServiceTest {
     void testRecordConversation() {
         User user = new User();
         user.setId(1L);
+        user.setRole(User.Role.USER);
         when(userRepository.findByUsername("testuser")).thenReturn(Optional.of(user));
 
         conversationService.recordConversation("testuser", "What is AI?", "AI stands for Artificial Intelligence.");
@@ -48,6 +49,7 @@ class ConversationServiceTest {
     void testGetConversations() {
         User user = new User();
         user.setId(1L);
+        user.setRole(User.Role.USER);
         when(userRepository.findByUsername("testuser")).thenReturn(Optional.of(user));
 
         Conversation conversation = new Conversation();
