@@ -3,6 +3,8 @@ package com.luky.nexusmind.controller;
 import com.luky.nexusmind.service.HybridSearchService;
 import com.luky.nexusmind.utils.LogUtils;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import com.luky.nexusmind.entity.SearchResult;
 
@@ -47,7 +49,7 @@ public class SearchController {
      * ]
      */
     @GetMapping("/hybrid")
-    public Map<String, Object> hybridSearch(@RequestParam String query,
+    public ResponseEntity<Map<String, Object>> hybridSearch(@RequestParam String query,
                                             @RequestParam(defaultValue = "10") int topK,
                                             @RequestAttribute(value = "userId", required = false) String userId) {
         LogUtils.PerformanceMonitor monitor = LogUtils.startPerformanceMonitor("HYBRID_SEARCH");
@@ -87,7 +89,7 @@ public class SearchController {
             responseBody.put("message", "查询成功");
             responseBody.put("data", results);
 
-            return responseBody;
+            return ResponseEntity.ok(responseBody);
         } catch (Exception e) {
             span.error(e);
             LogUtils.logBusinessError("HYBRID_SEARCH", userId != null ? userId : "anonymous",
@@ -99,7 +101,7 @@ public class SearchController {
             errorBody.put("code", 500);
             errorBody.put("message", e.getMessage());
             errorBody.put("data", Collections.emptyList());
-            return errorBody;
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorBody);
         } finally {
             span.end();
             span.close();

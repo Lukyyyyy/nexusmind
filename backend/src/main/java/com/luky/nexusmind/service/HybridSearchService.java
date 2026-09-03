@@ -152,7 +152,7 @@ public class HybridSearchService {
                 return results;
             } catch (Exception fallbackError) {
                 logger.error("后备搜索也失败", fallbackError);
-                return Collections.emptyList();
+                throw new IllegalStateException("知识库检索及纯文本降级均失败", fallbackError);
             }
         } finally {
             span.end();
@@ -244,13 +244,18 @@ public class HybridSearchService {
         Query permission = buildPermissionQuery(userDbId, userEffectiveTags, administrator);
         Query scopeFilter = scopeFileMd5s != null ? buildFileScopeQuery(scopeFileMd5s) : null;
 
-        CompletableFuture<List<SearchResult>> knnFuture = CompletableFuture.supplyAsync(
+        CompletableFuture<RecallResult> knnFuture = CompletableFuture.supplyAsync(
                 () -> knnRecall(queryVector, permission, scopeFilter), SEARCH_BRANCH_EXECUTOR);
-        CompletableFuture<List<SearchResult>> bm25Future = CompletableFuture.supplyAsync(
+        CompletableFuture<RecallResult> bm25Future = CompletableFuture.supplyAsync(
                 () -> bm25Recall(query, permission, scopeFilter), SEARCH_BRANCH_EXECUTOR);
 
-        List<SearchResult> knnHits = joinBranch("kNN", knnFuture);
-        List<SearchResult> bm25Hits = joinBranch("BM25", bm25Future);
+        RecallResult knnResult = joinBranch("kNN", knnFuture);
+        RecallResult bm25Result = joinBranch("BM25", bm25Future);
+        if (!knnResult.succeeded() && !bm25Result.succeeded()) {
+            throw new IllegalStateException("kNN 与 BM25 召回均失败");
+        }
+        List<SearchResult> knnHits = knnResult.hits();
+        List<SearchResult> bm25Hits = bm25Result.hits();
         span.attribute("nexusmind.search.knn_hits", knnHits.size())
                 .attribute("nexusmind.search.bm25_hits", bm25Hits.size());
         if (knnHits.isEmpty() && bm25Hits.isEmpty()) {
@@ -303,7 +308,7 @@ public class HybridSearchService {
             return limited;
         } catch (Exception e) {
             logger.error("纯文本搜索失败", e);
-            return new ArrayList<>();
+            throw new IllegalStateException("纯文本搜索失败", e);
         }
     }
 
@@ -344,7 +349,7 @@ public class HybridSearchService {
                 return results;
             } catch (Exception fallbackError) {
                 logger.error("后备搜索也失败", fallbackError);
-                return Collections.emptyList();
+                throw new IllegalStateException("知识库检索及纯文本降级均失败", fallbackError);
             }
         } finally {
             span.end();
@@ -409,18 +414,23 @@ public class HybridSearchService {
                 return textOnlySearch(query, topK, span);
             } catch (Exception e) {
                 logger.error("纯文本后备搜索失败", e);
-                return List.of();
+                throw new IllegalStateException("纯文本后备搜索失败", e);
             }
         }
 
         Query permission = buildPublicPermissionQuery();
-        CompletableFuture<List<SearchResult>> knnFuture = CompletableFuture.supplyAsync(
+        CompletableFuture<RecallResult> knnFuture = CompletableFuture.supplyAsync(
                 () -> knnRecall(queryVector, permission, null), SEARCH_BRANCH_EXECUTOR);
-        CompletableFuture<List<SearchResult>> bm25Future = CompletableFuture.supplyAsync(
+        CompletableFuture<RecallResult> bm25Future = CompletableFuture.supplyAsync(
                 () -> bm25Recall(query, permission, null), SEARCH_BRANCH_EXECUTOR);
 
-        List<SearchResult> knnHits = joinBranch("kNN", knnFuture);
-        List<SearchResult> bm25Hits = joinBranch("BM25", bm25Future);
+        RecallResult knnResult = joinBranch("kNN", knnFuture);
+        RecallResult bm25Result = joinBranch("BM25", bm25Future);
+        if (!knnResult.succeeded() && !bm25Result.succeeded()) {
+            throw new IllegalStateException("kNN 与 BM25 召回均失败");
+        }
+        List<SearchResult> knnHits = knnResult.hits();
+        List<SearchResult> bm25Hits = bm25Result.hits();
         span.attribute("nexusmind.search.knn_hits", knnHits.size())
                 .attribute("nexusmind.search.bm25_hits", bm25Hits.size());
         if (knnHits.isEmpty() && bm25Hits.isEmpty()) {
@@ -456,8 +466,18 @@ public class HybridSearchService {
         return ranked.size() > topK ? new ArrayList<>(ranked.subList(0, topK)) : ranked;
     }
 
-    /** kNN 召回分支：失败返回空列表，由另一路继续（不中断整条链路） */
-    private List<SearchResult> knnRecall(List<Float> queryVector, Query permission, Query scopeFilter) {
+    private record RecallResult(boolean succeeded, List<SearchResult> hits) {
+        static RecallResult success(List<SearchResult> hits) {
+            return new RecallResult(true, hits);
+        }
+
+        static RecallResult failure() {
+            return new RecallResult(false, List.of());
+        }
+    }
+
+    /** kNN 召回分支：失败返回失败状态，由另一路继续（不中断整条链路） */
+    private RecallResult knnRecall(List<Float> queryVector, Query permission, Query scopeFilter) {
         try {
             SearchResponse<EsDocument> response = esClient.search(s -> {
                 s.index("knowledge_base");
@@ -470,15 +490,15 @@ public class HybridSearchService {
                 s.size(rankWindow);
                 return s;
             }, EsDocument.class);
-            return toSearchResults(response);
+            return RecallResult.success(toSearchResults(response));
         } catch (Exception e) {
             logger.warn("kNN 召回分支失败，该路结果置空: {}", e.getMessage());
-            return List.of();
+            return RecallResult.failure();
         }
     }
 
-    /** BM25 召回分支：失败返回空列表，由另一路继续（不中断整条链路） */
-    private List<SearchResult> bm25Recall(String query, Query permission, Query scopeFilter) {
+    /** BM25 召回分支：失败返回失败状态，由另一路继续（不中断整条链路） */
+    private RecallResult bm25Recall(String query, Query permission, Query scopeFilter) {
         try {
             SearchResponse<EsDocument> response = esClient.search(s -> s
                     .index("knowledge_base")
@@ -490,19 +510,19 @@ public class HybridSearchService {
                     }))
                     .size(rankWindow),
                     EsDocument.class);
-            return toSearchResults(response);
+            return RecallResult.success(toSearchResults(response));
         } catch (Exception e) {
             logger.warn("BM25 召回分支失败，该路结果置空: {}", e.getMessage());
-            return List.of();
+            return RecallResult.failure();
         }
     }
 
-    private List<SearchResult> joinBranch(String branch, CompletableFuture<List<SearchResult>> future) {
+    private RecallResult joinBranch(String branch, CompletableFuture<RecallResult> future) {
         try {
             return future.get(30, TimeUnit.SECONDS);
         } catch (Exception e) {
             logger.warn("{} 召回分支执行失败，使用另一路继续: {}", branch, e.getMessage());
-            return List.of();
+            return RecallResult.failure();
         }
     }
 
