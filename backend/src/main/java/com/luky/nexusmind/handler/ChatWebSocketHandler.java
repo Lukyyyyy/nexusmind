@@ -37,8 +37,8 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     public void afterConnectionEstablished(WebSocketSession session) {
         UserIdentity identity = extractUserIdentity(session);
         sessions.put(identity.chatUserId(), session);
-        logger.info("WebSocket连接已建立，用户ID: {}，会话ID: {}，URI路径: {}", 
-                    identity.chatUserId(), session.getId(), session.getUri().getPath());
+        logger.info("WebSocket连接已建立，用户ID: {}，会话ID: {}",
+                    identity.chatUserId(), session.getId());
     }
 
     @Override
