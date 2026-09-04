@@ -61,6 +61,8 @@ public class SecurityConfig {
                             .requestMatchers("/api/v1/test/**").permitAll()
                             // 允许 Actuator 监控端点
                             .requestMatchers("/actuator/**").permitAll()
+                            // 短期下载票据在控制器中验证，不使用登录 JWT 作为 URL 参数。
+                            .requestMatchers("/api/v1/documents/download/content").permitAll()
                             // PDF预览接口在控制器内部按token校验文件访问权限，避免嵌入式预览被安全过滤器提前拦截
                             .requestMatchers("/api/v1/documents/preview/pdf").permitAll()
                             // SSE 事件流无法稳定设置 Authorization header，控制器内部按 query token 校验

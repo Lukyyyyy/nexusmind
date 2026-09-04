@@ -10,6 +10,7 @@ import com.luky.nexusmind.repository.FileUploadRepository;
 import com.luky.nexusmind.repository.OrganizationTagRepository;
 import com.luky.nexusmind.repository.UserRepository;
 import com.luky.nexusmind.service.DocumentService;
+import com.luky.nexusmind.service.DocumentDownloadTicketService;
 import com.luky.nexusmind.service.ElasticsearchService;
 import com.luky.nexusmind.service.FileProcessingStatusService;
 import com.luky.nexusmind.service.ProcessingStatusEventService;
@@ -18,6 +19,7 @@ import com.luky.nexusmind.utils.JwtUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.InputStreamResource;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -43,6 +45,9 @@ public class DocumentController {
 
     @Autowired
     private DocumentService documentService;
+
+    @Autowired
+    private DocumentDownloadTicketService downloadTickets;
 
     @Autowired
     private FileProcessingStatusService processingStatusService;
@@ -435,12 +440,35 @@ public class DocumentController {
     }
     
     /**
-     * 根据文件名下载文件
-     * 
-     * @param fileName 文件名
-     * @param token JWT token
-     * @return 文件资源或错误响应
+     * 下载票据仅在用户通过原下载接口的文件权限检查后签发。
+     * 浏览器无需接触 MinIO 地址或把登录 JWT 放入下载链接。
      */
+    @GetMapping("/download/content")
+    public ResponseEntity<?> downloadContent(@RequestParam String ticket) {
+        Optional<String> fileMd5 = downloadTickets.resolve(ticket);
+        if (fileMd5.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        }
+        Optional<FileUpload> file = fileUploadRepository.findByFileMd5(fileMd5.get());
+        if (file.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        }
+        try {
+            InputStream stream = documentService.openFileStream(file.get().getFileName());
+            return ResponseEntity.ok()
+                    .contentType(MediaType.APPLICATION_OCTET_STREAM)
+                    .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.attachment()
+                            .filename(file.get().getFileName(), StandardCharsets.UTF_8).build().toString())
+                    .header(HttpHeaders.CACHE_CONTROL, "no-store")
+                    .header("Referrer-Policy", "no-referrer")
+                    .header("X-Content-Type-Options", "nosniff")
+                    .body(new InputStreamResource(stream));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("code", 500, "message", "文件下载失败"));
+        }
+    }
+
     @GetMapping("/download")
     public ResponseEntity<?> downloadFileByName(
             @RequestParam String fileName,

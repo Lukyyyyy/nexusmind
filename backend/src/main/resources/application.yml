@@ -136,6 +136,8 @@ mail:
     test-template-id: ${TENCENT_SES_TEST_TEMPLATE_ID:0}
 
 file:
+  download:
+    ticket-ttl: ${FILE_DOWNLOAD_TICKET_TTL:1h}
   parsing:
     chunk-size: 512 # 每个文本块的最大字符数
     min-chunk-size: 256 # 用户可配置文本块大小下限

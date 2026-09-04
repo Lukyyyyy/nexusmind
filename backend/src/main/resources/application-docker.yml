@@ -70,6 +70,8 @@ app:
   public-url: ${APP_PUBLIC_URL:http://127.0.0.1:9527}
 
 file:
+  download:
+    public-url: ${APP_PUBLIC_URL:http://127.0.0.1:9527}
   parsing:
     chunk-size: 512
     min-chunk-size: 256

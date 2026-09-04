@@ -168,19 +168,18 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_DATABASE: 1
-      REDIS_PASSWORD: ""
       MINIO_ENDPOINT: http://minio:9000
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       ELASTICSEARCH_HOST: elasticsearch
       ELASTICSEARCH_PORT: 9200
       NEO4J_URI: bolt://neo4j:7687
       MINERU_BASE_URL: http://mineru-api:8000
-      MINERU_BACKEND: pipeline
+      MINERU_BACKEND: ${MINERU_BACKEND:-pipeline}
       MINERU_PARSE_METHOD: ${MINERU_PARSE_METHOD:-auto}
       MINERU_OCR: "${MINERU_OCR:-true}"
       MINERU_ENABLE_TABLE: "${MINERU_ENABLE_TABLE:-true}"
       MINERU_ENABLE_FORMULA: "${MINERU_ENABLE_FORMULA:-true}"
-      KNOWLEDGE_GRAPH_ENABLED: "true"
+      KNOWLEDGE_GRAPH_ENABLED: "${KNOWLEDGE_GRAPH_ENABLED:-true}"
     depends_on:
       elasticsearch:
         condition: service_healthy

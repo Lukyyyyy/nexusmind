@@ -9,10 +9,8 @@ import com.luky.nexusmind.repository.DocumentVectorRepository;
 import com.luky.nexusmind.repository.FileUploadRepository;
 import com.luky.nexusmind.repository.UserRepository;
 import io.minio.GetObjectArgs;
-import io.minio.GetPresignedObjectUrlArgs;
 import io.minio.MinioClient;
 import io.minio.RemoveObjectArgs;
-import io.minio.http.Method;
 import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.AutoDetectParser;
 import org.apache.tika.parser.ParseContext;
@@ -59,6 +57,9 @@ public class DocumentService {
 
     @Autowired
     private MinioClient minioClient;
+
+    @Autowired
+    private DocumentDownloadTicketService downloadTickets;
 
     @Value("${minio.bucketName:uploads}")
     private String minioBucketName = "uploads";
@@ -390,7 +391,7 @@ public class DocumentService {
      * 生成文件下载链接
      * 
      * @param fileMd5 文件MD5
-     * @return 预签名下载URL
+     * @return 短期有效的后端下载链接
      */
     public String generateDownloadUrl(String fileMd5) {
         logger.info("生成文件下载链接: fileMd5={}", fileMd5);
@@ -400,22 +401,11 @@ public class DocumentService {
             FileUpload fileUpload = fileUploadRepository.findByFileMd5(fileMd5)
                     .orElseThrow(() -> new RuntimeException("文件不存在: " + fileMd5));
             
-            // MinIO中的对象路径格式: merged/文件名
-            String objectName = "merged/" + fileUpload.getFileName();
-            
-            // 生成预签名URL，有效期1小时
-            String presignedUrl = minioClient.getPresignedObjectUrl(
-                    GetPresignedObjectUrlArgs.builder()
-                            .method(Method.GET)
-                            .bucket(minioBucketName)
-                            .object(objectName)
-                            .expiry(3600) // 1小时有效期
-                            .build()
-            );
-            
-            logger.info("成功生成文件下载链接: fileMd5={}, fileName={}, objectName={}", 
-                    fileMd5, fileUpload.getFileName(), objectName);
-            return presignedUrl;
+            String downloadUrl = downloadTickets.createUrl(fileMd5);
+
+            logger.info("成功生成文件下载链接: fileMd5={}, fileName={}",
+                    fileMd5, fileUpload.getFileName());
+            return downloadUrl;
         } catch (Exception e) {
             logger.error("生成文件下载链接失败: fileMd5={}", fileMd5, e);
             return null;
