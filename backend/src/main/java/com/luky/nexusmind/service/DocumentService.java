@@ -91,6 +91,7 @@ public class DocumentService {
      * 4. Elasticsearch中的向量数据
      *
      * @param fileMd5 文件MD5
+     * @param userId 文件所有者ID，调用方须先完成删除权限校验
      */
     @Transactional
     public void deleteDocument(String fileMd5, String userId) {

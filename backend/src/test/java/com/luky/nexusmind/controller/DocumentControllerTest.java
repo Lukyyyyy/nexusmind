@@ -7,6 +7,7 @@ import com.luky.nexusmind.model.ProcessingStage;
 import com.luky.nexusmind.model.ProcessingState;
 import com.luky.nexusmind.model.User;
 import com.luky.nexusmind.repository.DocumentVectorRepository;
+import com.luky.nexusmind.repository.FileUploadRepository;
 import com.luky.nexusmind.repository.OrganizationTagRepository;
 import com.luky.nexusmind.repository.UserRepository;
 import com.luky.nexusmind.service.DocumentService;
@@ -14,6 +15,8 @@ import com.luky.nexusmind.service.ElasticsearchService;
 import com.luky.nexusmind.service.FileProcessingStatusService;
 import com.luky.nexusmind.service.ProcessingStatusEventService;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -30,6 +33,79 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 class DocumentControllerTest {
+
+    @ParameterizedTest
+    @ValueSource(strings = {"default", "other-org", "PRIVATE_owner"})
+    void superAdminCanDeleteOtherUsersDocuments(String orgTag) {
+        FileUpload document = file("document.txt", orgTag, false);
+        RecordingDeleteService service = new RecordingDeleteService();
+        DocumentController controller = deleteController(document, service);
+
+        ResponseEntity<?> response = controller.deleteDocument(document.getFileMd5(), "super-admin", "SUPER_ADMIN");
+
+        assertEquals(200, response.getStatusCode().value());
+        assertEquals(List.of(document.getFileMd5(), document.getUserId()), service.deleted);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"USER", "ADMIN"})
+    void otherRolesCannotDeleteAnotherUsersPublicDocument(String role) {
+        FileUpload document = file("document.txt", "default", true);
+        RecordingDeleteService service = new RecordingDeleteService();
+        DocumentController controller = deleteController(document, service);
+
+        ResponseEntity<?> response = controller.deleteDocument(document.getFileMd5(), "other-user", role);
+
+        assertEquals(404, response.getStatusCode().value());
+        assertEquals(List.of(), service.deleted);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"USER", "ADMIN", "SUPER_ADMIN"})
+    void ownerCanStillDeleteOwnDocument(String role) {
+        FileUpload document = file("document.txt", "PRIVATE_owner", false);
+        RecordingDeleteService service = new RecordingDeleteService();
+        DocumentController controller = deleteController(document, service);
+
+        ResponseEntity<?> response = controller.deleteDocument(document.getFileMd5(), document.getUserId(), role);
+
+        assertEquals(200, response.getStatusCode().value());
+        assertEquals(List.of(document.getFileMd5(), document.getUserId()), service.deleted);
+    }
+
+    @Test
+    void superAdminGetsNotFoundForMissingDocument() {
+        RecordingDeleteService service = new RecordingDeleteService();
+        DocumentController controller = deleteController(null, service);
+
+        ResponseEntity<?> response = controller.deleteDocument("missing", "super-admin", "SUPER_ADMIN");
+
+        assertEquals(404, response.getStatusCode().value());
+        assertEquals(List.of(), service.deleted);
+    }
+
+    private static DocumentController deleteController(FileUpload document, RecordingDeleteService service) {
+        DocumentController controller = new DocumentController();
+        ReflectionTestUtils.setField(controller, "documentService", service);
+        ReflectionTestUtils.setField(controller, "fileUploadRepository",
+                proxy(FileUploadRepository.class, (proxy, method, args) -> switch (method.getName()) {
+                    case "findByFileMd5" -> Optional.ofNullable(document)
+                            .filter(file -> file.getFileMd5().equals(args[0]));
+                    case "findByFileMd5AndUserId" -> Optional.ofNullable(document)
+                            .filter(file -> file.getFileMd5().equals(args[0]) && file.getUserId().equals(args[1]));
+                    default -> throw new UnsupportedOperationException(method.getName());
+                }));
+        return controller;
+    }
+
+    private static class RecordingDeleteService extends DocumentService {
+        private List<String> deleted = List.of();
+
+        @Override
+        public void deleteDocument(String fileMd5, String userId) {
+            deleted = List.of(fileMd5, userId);
+        }
+    }
 
     @Test
     void accessibleFilesUseFileOwnerProcessingStatusWhenViewerIsDifferentUser() {

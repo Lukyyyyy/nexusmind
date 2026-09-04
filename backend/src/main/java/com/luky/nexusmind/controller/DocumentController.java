@@ -91,8 +91,10 @@ public class DocumentController {
         try {
             LogUtils.logBusiness("DELETE_DOCUMENT", userId, "接收到删除文档请求: fileMd5=%s, role=%s", fileMd5, role);
             
-            // 获取文件信息
-            Optional<FileUpload> fileOpt = fileUploadRepository.findByFileMd5AndUserId(fileMd5, userId);
+            // 超级管理员可删除任意文档，其他用户仍只查询自己的文档。
+            Optional<FileUpload> fileOpt = "SUPER_ADMIN".equals(role)
+                    ? fileUploadRepository.findByFileMd5(fileMd5)
+                    : fileUploadRepository.findByFileMd5AndUserId(fileMd5, userId);
             if (fileOpt.isEmpty()) {
                 LogUtils.logUserOperation(userId, "DELETE_DOCUMENT", fileMd5, "FAILED_NOT_FOUND");
                 monitor.end("删除失败：文档不存在");
@@ -104,7 +106,7 @@ public class DocumentController {
             
             FileUpload file = fileOpt.get();
             
-            // 权限检查：只有文件所有者或管理员可以删除
+            // 权限检查：只有文件所有者或超级管理员可以删除
             if (!file.getUserId().equals(userId) && !"SUPER_ADMIN".equals(role)) {
                 LogUtils.logUserOperation(userId, "DELETE_DOCUMENT", fileMd5, "FAILED_PERMISSION_DENIED");
                 LogUtils.logBusiness("DELETE_DOCUMENT", userId, "用户无权删除文档: fileMd5=%s, fileOwner=%s", fileMd5, file.getUserId());
@@ -115,8 +117,8 @@ public class DocumentController {
                 return ResponseEntity.status(HttpStatus.FORBIDDEN).body(response);
             }
             
-            // 执行删除操作
-            documentService.deleteDocument(fileMd5, userId);
+            // 使用实际所有者查询文档及清理处理状态，操作日志仍记录当前用户。
+            documentService.deleteDocument(fileMd5, file.getUserId());
             
             LogUtils.logFileOperation(userId, "DELETE", file.getFileName(), fileMd5, "SUCCESS");
             monitor.end("文档删除成功");
