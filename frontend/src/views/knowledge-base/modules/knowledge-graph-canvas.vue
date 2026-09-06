@@ -3,6 +3,7 @@ import { CanvasEvent, EdgeEvent, Graph, NodeEvent } from '@antv/g6';
 import type { GraphData, IElementEvent } from '@antv/g6';
 import SvgIcon from '@/components/custom/svg-icon.vue';
 import { layoutDocumentGraph } from './document-graph-layout';
+import { layoutOrganizationGraph } from './organization-graph-layout';
 
 defineOptions({ name: 'KnowledgeGraphCanvas' });
 
@@ -11,6 +12,7 @@ const props = withDefaults(
     nodes: Api.KnowledgeGraph.GraphNode[];
     edges: Api.KnowledgeGraph.GraphEdge[];
     document?: { id: string; name: string };
+    layoutMode?: 'force' | 'organization';
     showInspector?: boolean;
     fullscreenTarget?: HTMLElement | null;
   }>(),
@@ -36,7 +38,7 @@ let resizeFrame = 0;
 const canvasResizeObserver = new ResizeObserver(() => {
   cancelAnimationFrame(resizeFrame);
   resizeFrame = requestAnimationFrame(() => {
-    if (props.document && graph && !rendering.value) void fitView(false);
+    if ((props.document || props.layoutMode === 'organization') && graph && !rendering.value) void fitView(false);
   });
 });
 watch(containerRef, element => {
@@ -141,6 +143,31 @@ function graphData(): GraphData {
       ]
     };
   }
+  if (props.layoutMode === 'organization') {
+    const layout = layoutOrganizationGraph(nodes);
+    const nodeById = new Map(nodes.map(node => [node.id, node]));
+    return {
+      nodes: nodes.map(node => {
+        const position = layout.positions.get(node.id)!;
+        return { id: node.id,
+          data: { ...node, displayLabel: position.label, communityCore: position.communityCore },
+          style: { x: position.x, y: position.y } };
+      }),
+      edges: edges.map(edge => {
+        const source = nodeById.get(edge.source);
+        const target = nodeById.get(edge.target);
+        const sourcePosition = layout.positions.get(edge.source);
+        const targetPosition = layout.positions.get(edge.target);
+        const crossCommunity = source?.communityId !== target?.communityId;
+        const crossComponent = source?.componentId !== target?.componentId;
+        return { id: edge.id, source: edge.source, target: edge.target,
+          data: { ...edge, organizationEdge: true, organizationCrossCommunity: crossCommunity,
+            organizationCrossComponent: crossComponent,
+            organizationPrimary: sourcePosition?.communityCore || targetPosition?.communityCore,
+            layoutCurveOffset: crossCommunity ? edgeCurveOffset(edge.id) : 0 } };
+      })
+    };
+  }
   const adjacency = new Map(nodes.map(node => [node.id, new Set<string>()]));
 
   edges.forEach(edge => {
@@ -204,7 +231,10 @@ function nodeStyle(datum: { data?: Record<string, unknown> }) {
   const node = datum.data as unknown as Api.KnowledgeGraph.GraphNode;
   const color = nodeColor(node.type);
   return {
-    size: datum.data?.documentRoot ? 76 : Math.min(58, 34 + Math.max(node.degree - 1, 0) * 4),
+    size: datum.data?.documentRoot ? 76
+      : props.layoutMode === 'organization'
+        ? Math.min(64, 34 + Math.max(node.degree - 1, 0) * 3 + Number(node.importance || 0) * 10)
+        : Math.min(58, 34 + Math.max(node.degree - 1, 0) * 4),
     fill: color,
     fillOpacity: themeStore.darkMode ? 0.86 : 0.9,
     stroke: themeStore.darkMode ? '#e2e8f0' : '#ffffff',
@@ -216,7 +246,7 @@ function nodeStyle(datum: { data?: Record<string, unknown> }) {
     labelOffsetY: 8,
     labelFill: themeStore.darkMode ? '#e5e7eb' : '#334155',
     labelFontSize: 12,
-    labelFontWeight: datum.data?.core || datum.data?.documentRoot ? 600 : 500,
+    labelFontWeight: datum.data?.core || datum.data?.documentRoot || datum.data?.communityCore ? 600 : 500,
     labelWordWrap: !props.document,
     labelMaxWidth: datum.data?.documentRoot ? 300 : datum.data?.core ? 210 : 160,
     labelMaxLines: props.document ? String(datum.data?.displayLabel || node.name).split('\n').length : 1,
@@ -240,18 +270,20 @@ function edgeStyle(datum: { data?: Record<string, unknown> }) {
   let stroke = themeStore.darkMode ? '#718096' : '#a5b1c1';
   if (edge.crossDocument) stroke = '#0f8c72';
   if (edge.disputed) stroke = '#d97706';
-  const supplementary = datum.data?.layoutTree === false;
-  let lineWidth = edge.crossDocument ? 2 : supplementary ? 1 : 1.5;
+  const organizationSecondary = datum.data?.organizationEdge && !datum.data?.organizationPrimary;
+  const supplementary = datum.data?.layoutTree === false || organizationSecondary;
+  const crossCommunity = Boolean(datum.data?.organizationCrossCommunity);
+  let lineWidth = edge.crossDocument ? 2 : crossCommunity ? 1.15 : supplementary ? 1 : 1.5;
   if (selectedEdgeId.value === edge.id) lineWidth = 3;
   return {
     stroke,
     lineWidth,
-    opacity: supplementary ? 0.42 : 0.82,
+    opacity: crossCommunity ? 0.5 : supplementary ? 0.46 : 0.82,
     curveOffset: Number(datum.data?.layoutCurveOffset || 0),
     lineDash: edge.disputed ? [6, 4] : undefined,
     endArrow: true,
     endArrowSize: 8,
-    labelText: supplementary ? undefined : edge.predicate,
+    labelText: supplementary || crossCommunity ? undefined : edge.predicate,
     labelFill: themeStore.darkMode ? '#cbd5e1' : '#475569',
     labelFontSize: 11,
     labelBackground: true,
@@ -269,10 +301,12 @@ async function createGraph() {
     container: containerRef.value,
     autoResize: true,
     padding: 64,
-    autoFit: props.document ? undefined : { type: 'view', options: { when: 'always', direction: 'both' } },
+    autoFit: props.document || props.layoutMode === 'organization'
+      ? undefined
+      : { type: 'view', options: { when: 'always', direction: 'both' } },
     animation: false,
     data: graphData(),
-    layout: documentNode.value ? undefined : {
+    layout: documentNode.value || props.layoutMode === 'organization' ? undefined : {
       type: 'd3-force',
       animation: false,
       link: { distance: 108, strength: 0.8 },
@@ -294,7 +328,7 @@ async function createGraph() {
       }
     },
     edge: {
-      type: datum => datum.data?.layoutTree === false ? 'quadratic' : 'line',
+      type: datum => datum.data?.layoutTree === false || datum.data?.organizationCrossCommunity ? 'quadratic' : 'line',
       style: edgeStyle,
       state: {
         selected: datum => ({
@@ -356,6 +390,13 @@ async function fitView(animated = true) {
     await graph.focusElement(documentNode.value.id, animated ? { duration: 300 } : false);
     return;
   }
+  if (graph && props.layoutMode === 'organization') {
+    await graph.fitView(
+      { when: 'always', direction: 'both' },
+      animated ? { duration: 300 } : undefined
+    );
+    return;
+  }
   await graph?.fitView(
     { when: 'always', direction: 'both' },
     animated ? { duration: 300 } : undefined
@@ -365,7 +406,7 @@ async function fitView(animated = true) {
 async function relayout() {
   rendering.value = true;
   try {
-    if (props.document) {
+    if (props.document || props.layoutMode === 'organization') {
       await clearSelection();
       graph?.setData(graphData());
       await graph?.render();
@@ -431,7 +472,7 @@ function syncFullscreenState() {
 }
 
 watch(
-  () => [props.nodes, props.edges, props.document, keyword.value, selectedType.value, themeStore.darkMode],
+  () => [props.nodes, props.edges, props.document, props.layoutMode, keyword.value, selectedType.value, themeStore.darkMode],
   () => {
     selectedEdgeId.value = null;
     selectedNodeId.value = null;
@@ -486,6 +527,22 @@ onBeforeUnmount(() => {
         <i :style="{ backgroundColor: nodeColor(option.value) }" />
         {{ option.label }}
       </span>
+      <template v-if="layoutMode === 'organization'">
+        <span class="graph-legend__divider" aria-hidden="true" />
+        <span class="graph-legend__label">关系</span>
+        <span class="graph-legend__item" title="当前结果中没有发现同一主体、同一关系指向其他目标">
+          <i class="graph-legend__line graph-legend__line--normal" />
+          普通关系
+        </span>
+        <span class="graph-legend__item" title="同一关系由两篇及以上文档共同支持">
+          <i class="graph-legend__line graph-legend__line--cross-document" />
+          跨文档关系
+        </span>
+        <span class="graph-legend__item" title="同一主体、同一关系指向多个目标，需要结合原文证据判断">
+          <i class="graph-legend__line graph-legend__line--disputed" />
+          争议关系
+        </span>
+      </template>
     </div>
 
     <div v-if="visibleData.nodes.length === 0" class="graph-empty flex items-center justify-center">
@@ -570,6 +627,35 @@ onBeforeUnmount(() => {
   border-radius: 999px;
 }
 
+.graph-legend__divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: #d9e0e8;
+}
+
+.graph-legend__label {
+  color: #475569;
+  font-weight: 600;
+}
+
+.graph-legend__item .graph-legend__line {
+  width: 22px;
+  height: 0;
+  border-radius: 0;
+  background: transparent;
+  border-top: 2px solid #a5b1c1;
+}
+
+.graph-legend__item .graph-legend__line--cross-document {
+  border-color: #0f8c72;
+}
+
+.graph-legend__item .graph-legend__line--disputed {
+  border-color: #d97706;
+  border-top-style: dashed;
+}
+
 .graph-content {
   position: relative;
 }
@@ -627,6 +713,14 @@ onBeforeUnmount(() => {
 :global(html.dark) .graph-legend {
   color: #9ca9ba;
   background: rgb(17 24 39 / 72%);
+}
+
+:global(html.dark) .graph-legend__divider {
+  background: #354154;
+}
+
+:global(html.dark) .graph-legend__label {
+  color: #cbd5e1;
 }
 
 :global(html.dark) .graph-inspector h3 {

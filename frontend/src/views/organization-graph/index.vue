@@ -69,7 +69,7 @@ async function loadGraph() {
     query: keyword.value.trim() || undefined,
     entityType: selectedType.value || undefined,
     fileIds: selectedFileIds.value.length > 0 ? selectedFileIds.value : undefined,
-    limit: 500
+    limit: 1000
   });
   if (!error) graph.value = data;
   loading.value = false;
@@ -213,7 +213,7 @@ onMounted(async () => {
         <div><small>来源文档</small><strong>{{ graph.stats.documentCount }}</strong></div>
       </div>
       <div class="stat-context">
-        当前范围：{{ graph.orgName }} · {{ scopeTypeLabel(graph.scopeType) }}
+        当前范围：{{ graph.orgName }} · {{ scopeTypeLabel(graph.scopeType) }} · {{ graph.communities?.length || 0 }} 个知识社区
       </div>
     </div>
 
@@ -224,6 +224,7 @@ onMounted(async () => {
             :nodes="graph.nodes"
             :edges="canvasEdges"
             :show-inspector="false"
+            layout-mode="organization"
             :fullscreen-target="workspacePanel"
             @node-select="handleNodeSelect"
             @edge-select="handleEdgeSelect"

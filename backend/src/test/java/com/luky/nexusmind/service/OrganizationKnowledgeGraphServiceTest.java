@@ -41,6 +41,9 @@ class OrganizationKnowledgeGraphServiceTest {
                 "ORG_INTERNAL:研发部", "jack", "USER", "订单", "SYSTEM", null, null);
 
         assertEquals(2, response.nodes().size());
+        assertEquals(1, response.communities().size());
+        assertTrue(response.nodes().stream().allMatch(node -> node.componentId() != null
+                && node.communityId() != null && node.importance() > 0));
         assertEquals(1, response.edges().size());
         assertEquals("架构说明.pdf", response.edges().get(0).fileName());
         assertEquals("订单系统依赖 Redis", response.edges().get(0).evidenceText());
@@ -88,6 +91,34 @@ class OrganizationKnowledgeGraphServiceTest {
         assertTrue(redis.crossDocument());
         assertEquals(1, response.stats().crossDocumentRelationCount());
         assertTrue(response.edges().stream().allMatch(OrganizationKnowledgeGraphService.GraphEdge::disputed));
+    }
+
+
+    @Test
+    void limitsFactsWithoutDroppingEvidenceRows() {
+        DocumentService documents = mock(DocumentService.class);
+        OrganizationTagRepository organizations = mock(OrganizationTagRepository.class);
+        KnowledgeGraphStoreService store = mock(KnowledgeGraphStoreService.class);
+        OrganizationKnowledgeGraphService service = new OrganizationKnowledgeGraphService(documents, organizations, store);
+        FileUpload first = file(7L, "研发部", false, true, KnowledgeGraphStatus.PUBLISHED);
+        FileUpload second = file(8L, "研发部", false, true, KnowledgeGraphStatus.PUBLISHED);
+        when(documents.getAccessibleFiles("jack", "", "USER")).thenReturn(List.of(first, second));
+        when(documents.getEffectiveOrganizationTags("jack")).thenReturn(List.of("研发部"));
+        when(organizations.findAll()).thenReturn(List.of());
+        when(store.isEnabled()).thenReturn(true);
+        when(store.loadOrganizationRelations(anyList(), anyList(), isNull(), isNull(), eq(2))).thenReturn(List.of(
+                relation(11L, "Redis", 7L, "架构说明.pdf", "订单系统依赖 Redis", 0.94),
+                relation(12L, "Redis", 8L, "部署说明.pdf", "生产环境仍依赖 Redis", 0.91),
+                relation(13L, "KeyDB", 8L, "部署说明.pdf", "新版本改为依赖 KeyDB", 0.88)
+        ));
+
+        OrganizationKnowledgeGraphService.OrganizationGraphResponse response = service.getOrganizationGraph(
+                "ORG_INTERNAL:研发部", "jack", "USER", null, null, null, 1);
+
+        assertTrue(response.truncated());
+        assertEquals(1, response.edges().size());
+        assertEquals(2, response.edges().get(0).evidences().size());
+        assertEquals(2, response.edges().get(0).documentCount());
     }
 
     @Test

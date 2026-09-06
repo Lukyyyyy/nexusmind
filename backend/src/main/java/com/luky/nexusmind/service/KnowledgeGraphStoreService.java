@@ -5,6 +5,7 @@ import com.luky.nexusmind.model.GraphCandidate;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.Session;
 import org.neo4j.driver.TransactionConfig;
+import org.neo4j.driver.TransactionContext;
 import org.neo4j.driver.Values;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -69,18 +70,27 @@ public class KnowledgeGraphStoreService {
                     for (int scopeIndex = 0; scopeIndex < scopeIds.size(); scopeIndex++) {
                         String scopeId = scopeIds.get(scopeIndex);
                         List<Map<String, Object>> rows = new ArrayList<>();
+                        Map<String, String> resolvedEntityKeys = new HashMap<>();
                         for (GraphCandidate candidate : candidates) {
                             String subjectMention = hasText(candidate.getSubjectMentionName())
                                     ? candidate.getSubjectMentionName() : candidate.getSubjectName();
                             String objectMention = hasText(candidate.getObjectMentionName())
                                     ? candidate.getObjectMentionName() : candidate.getObjectName();
                             Map<String, Object> params = new HashMap<>();
-                            params.put("subjectKey", entityKey(scopeId, candidate.getSubjectType(), candidate.getSubjectName()));
+                            String subjectResolution = normalizeType(candidate.getSubjectType()) + "|"
+                                    + normalizeName(candidate.getSubjectName()) + "|" + normalizeName(subjectMention);
+                            params.put("subjectKey", resolvedEntityKeys.computeIfAbsent(subjectResolution,
+                                    ignored -> resolveEntityKey(tx, scopeId, candidate.getSubjectType(),
+                                            candidate.getSubjectName(), subjectMention)));
                             params.put("subjectName", candidate.getSubjectName());
                             params.put("subjectNormalizedName", normalizeName(candidate.getSubjectName()));
                             params.put("subjectMentionNormalizedName", normalizeName(subjectMention));
                             params.put("subjectType", normalizeType(candidate.getSubjectType()));
-                            params.put("objectKey", entityKey(scopeId, candidate.getObjectType(), candidate.getObjectName()));
+                            String objectResolution = normalizeType(candidate.getObjectType()) + "|"
+                                    + normalizeName(candidate.getObjectName()) + "|" + normalizeName(objectMention);
+                            params.put("objectKey", resolvedEntityKeys.computeIfAbsent(objectResolution,
+                                    ignored -> resolveEntityKey(tx, scopeId, candidate.getObjectType(),
+                                            candidate.getObjectName(), objectMention)));
                             params.put("objectName", candidate.getObjectName());
                             params.put("objectNormalizedName", normalizeName(candidate.getObjectName()));
                             params.put("objectMentionNormalizedName", normalizeName(objectMention));
@@ -120,14 +130,12 @@ public class KnowledgeGraphStoreService {
                                     d.updatedAt = datetime()
                                 MERGE (s:Entity {key: row.subjectKey})
                                 ON CREATE SET s.name = row.subjectName, s.type = row.subjectType, s.scopeId = row.scopeId,
-                                              s.createdAt = datetime()
-                                SET s.normalizedName = row.subjectNormalizedName,
-                                    s.updatedAt = datetime()
+                                              s.normalizedName = row.subjectNormalizedName, s.createdAt = datetime()
+                                SET s.updatedAt = datetime()
                                 MERGE (o:Entity {key: row.objectKey})
                                 ON CREATE SET o.name = row.objectName, o.type = row.objectType, o.scopeId = row.scopeId,
-                                              o.createdAt = datetime()
-                                SET o.normalizedName = row.objectNormalizedName,
-                                    o.updatedAt = datetime()
+                                              o.normalizedName = row.objectNormalizedName, o.createdAt = datetime()
+                                SET o.updatedAt = datetime()
                                 MERGE (sa:EntityAlias {key: row.subjectAliasKey})
                                 SET sa.name = row.subjectMention,
                                     sa.normalizedName = row.subjectMentionNormalizedName,
@@ -408,22 +416,47 @@ public class KnowledgeGraphStoreService {
         int safeLimit = Math.min(Math.max(limit, 1), 1001);
         try (Session session = driver.session()) {
             return session.executeRead(tx -> tx.run("""
+                    CALL {
+                        MATCH (source:Entity)<-[:SUBJECT]-(claim:Claim)-[:OBJECT]->(target:Entity)
+                        WHERE claim.scopeId IN $scopeIds
+                          AND claim.fileUploadId IN $fileIds
+                          AND ($query = '' OR toLower(source.name) CONTAINS toLower($query)
+                               OR toLower(target.name) CONTAINS toLower($query)
+                               OR EXISTS {
+                                   MATCH (sourceAlias:EntityAlias)-[:REFERS_TO]->(source)
+                                   WHERE toLower(sourceAlias.name) CONTAINS toLower($query)
+                               }
+                               OR EXISTS {
+                                   MATCH (targetAlias:EntityAlias)-[:REFERS_TO]->(target)
+                                   WHERE toLower(targetAlias.name) CONTAINS toLower($query)
+                               }
+                               OR toLower(claim.predicate) CONTAINS toLower($query)
+                               OR toLower(coalesce(claim.evidence, '')) CONTAINS toLower($query))
+                          AND ($entityType = '' OR source.type = $entityType OR target.type = $entityType)
+                        WITH source, target, toLower(trim(claim.predicate)) AS predicateKey,
+                             max(coalesce(claim.confidence, 0.0)) AS bestConfidence
+                        ORDER BY bestConfidence DESC, source.key, predicateKey, target.key
+                        LIMIT $limit
+                        RETURN collect({sourceKey: source.key, targetKey: target.key,
+                                        predicateKey: predicateKey,
+                                        bestConfidence: bestConfidence}) AS selectedFacts
+                    }
+                    UNWIND selectedFacts AS selected
                     MATCH (s:Entity)<-[:SUBJECT]-(c:Claim)-[:OBJECT]->(o:Entity)
                     WHERE c.scopeId IN $scopeIds
                       AND c.fileUploadId IN $fileIds
-                      AND ($query = '' OR toLower(s.name) CONTAINS toLower($query)
-                           OR toLower(o.name) CONTAINS toLower($query)
-                           OR toLower(c.predicate) CONTAINS toLower($query)
-                           OR toLower(coalesce(c.evidence, '')) CONTAINS toLower($query))
-                      AND ($entityType = '' OR s.type = $entityType OR o.type = $entityType)
+                      AND s.key = selected.sourceKey
+                      AND o.key = selected.targetKey
+                      AND toLower(trim(c.predicate)) = selected.predicateKey
                     RETURN s.key AS sourceKey, s.name AS sourceName, s.type AS sourceType,
                            o.key AS targetKey, o.name AS targetName, o.type AS targetType,
                            c.candidateId AS candidateId, c.predicate AS predicate,
                            c.fileUploadId AS fileUploadId, c.fileMd5 AS fileMd5,
                            c.fileName AS fileName, c.chunkId AS chunkId,
                            c.evidence AS evidence, c.confidence AS confidence
-                    ORDER BY c.confidence DESC, c.candidateId ASC
-                    LIMIT $limit
+                    ORDER BY selected.bestConfidence DESC, selected.sourceKey,
+                             selected.predicateKey, selected.targetKey,
+                             c.confidence DESC, c.candidateId ASC
                     """, Values.parameters(
                             "scopeIds", scopeIds.stream().filter(Objects::nonNull).distinct().toList(),
                             "fileIds", ids,
@@ -547,6 +580,30 @@ public class KnowledgeGraphStoreService {
             value = value.substring(DocumentPermissionPolicy.PRIVATE_TAG_PREFIX.length());
         }
         return "PRIVATE:" + value;
+    }
+
+    private String resolveEntityKey(TransactionContext tx, String scopeId, String type,
+                                    String canonicalName, String mention) {
+        String normalizedType = normalizeType(type);
+        String normalizedCanonical = normalizeName(canonicalName);
+        String normalizedMention = normalizeName(mention);
+        List<String> matches = tx.run("""
+                MATCH (entity:Entity {scopeId: $scopeId, type: $type})
+                WHERE entity.normalizedName = $canonical
+                   OR EXISTS {
+                       MATCH (alias:EntityAlias {scopeId: $scopeId, type: $type})-[:REFERS_TO]->(entity)
+                       WHERE alias.normalizedName = $canonical OR alias.normalizedName = $mention
+                   }
+                WITH entity,
+                     CASE WHEN entity.normalizedName = $canonical THEN 0 ELSE 1 END AS matchRank
+                RETURN entity.key AS key
+                ORDER BY matchRank, entity.key
+                LIMIT 2
+                """, Values.parameters("scopeId", scopeId, "type", normalizedType,
+                        "canonical", normalizedCanonical, "mention", normalizedMention))
+                .list(record -> record.get("key").asString());
+        // Ambiguous aliases are deliberately not auto-merged: a reviewer must resolve homonyms.
+        return matches.size() == 1 ? matches.get(0) : entityKey(scopeId, normalizedType, canonicalName);
     }
 
     private String entityKey(String scopeId, String type, String name) {

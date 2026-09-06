@@ -536,6 +536,9 @@ declare namespace Api {
       name: string;
       type: string;
       degree: number;
+      componentId?: string;
+      communityId?: string;
+      importance?: number;
     }
 
     interface GraphEdge {
@@ -585,6 +588,7 @@ declare namespace Api {
       scopeType: 'PUBLIC' | 'INTERNAL' | 'PRIVATE';
       nodes: GraphNode[];
       edges: OrganizationGraphEdge[];
+      communities: OrganizationCommunity[];
       entityTypes: string[];
       documents: OrganizationDocument[];
       stats: OrganizationGraphStats;
@@ -600,6 +604,15 @@ declare namespace Api {
         canRetry: boolean;
         failures: { stage: string; batch: number; ranges: string[]; reason: string }[];
       } | null;
+    }
+
+    interface OrganizationCommunity {
+      id: string;
+      componentId: string;
+      label: string;
+      nodeCount: number;
+      relationCount: number;
+      documentCount: number;
     }
 
     interface OrganizationGraphEdge {

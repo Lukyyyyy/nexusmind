@@ -9,6 +9,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -74,20 +75,18 @@ public class OrganizationKnowledgeGraphService {
                 entityType,
                 limit + 1
         );
-        boolean truncated = loaded.size() > limit;
-        List<KnowledgeGraphStoreService.OrganizationRelation> relations = truncated
-                ? loaded.subList(0, limit)
-                : loaded;
-
-        Map<FactKey, MutableFact> facts = new LinkedHashMap<>();
-        relations.forEach(relation -> facts.computeIfAbsent(FactKey.of(relation), ignored -> new MutableFact(relation))
+        Map<FactKey, MutableFact> loadedFacts = new LinkedHashMap<>();
+        loaded.forEach(relation -> loadedFacts
+                .computeIfAbsent(FactKey.of(relation), ignored -> new MutableFact(relation))
                 .addEvidence(relation));
+        boolean truncated = loadedFacts.size() > limit;
+        List<MutableFact> facts = loadedFacts.values().stream().limit(limit).toList();
         Map<StatementKey, Set<String>> statementTargets = new HashMap<>();
-        facts.values().forEach(fact -> statementTargets
+        facts.forEach(fact -> statementTargets
                 .computeIfAbsent(fact.statementKey(), ignored -> new HashSet<>()).add(fact.targetKey));
 
         Map<String, MutableNode> nodes = new LinkedHashMap<>();
-        List<GraphEdge> edges = facts.values().stream().map(fact -> {
+        List<GraphEdge> edges = facts.stream().map(fact -> {
             nodes.computeIfAbsent(fact.sourceKey, ignored -> new MutableNode(
                     fact.sourceKey, fact.sourceName, fact.sourceType)).incrementDegree();
             nodes.computeIfAbsent(fact.targetKey, ignored -> new MutableNode(
@@ -95,7 +94,10 @@ public class OrganizationKnowledgeGraphService {
             return fact.response(statementTargets.getOrDefault(fact.statementKey(), Set.of()).size() > 1);
         }).toList();
 
-        List<GraphNode> graphNodes = nodes.values().stream().map(MutableNode::response).toList();
+        Topology topology = analyzeTopology(nodes, edges);
+        List<GraphNode> graphNodes = nodes.values().stream().map(node -> node.response(
+                topology.componentIds().get(node.id), topology.communityIds().get(node.id),
+                topology.importance().getOrDefault(node.id, 0.0))).toList();
         List<String> entityTypes = graphNodes.stream().map(GraphNode::type).distinct().sorted().toList();
         Set<Long> contributingDocuments = edges.stream().flatMap(edge -> edge.evidences().stream())
                 .map(GraphEvidence::fileUploadId).collect(Collectors.toSet());
@@ -111,6 +113,7 @@ public class OrganizationKnowledgeGraphService {
                 selection.scopeType(),
                 graphNodes,
                 edges,
+                topology.communities(),
                 entityTypes,
                 documents,
                 new GraphStats(graphNodes.size(), edges.size(), contributingDocuments.size(),
@@ -191,10 +194,15 @@ public class OrganizationKnowledgeGraphService {
 
     public record OrganizationGraphResponse(String scopeId, String orgTag, String orgName, ScopeType scopeType,
                                             List<GraphNode> nodes, List<GraphEdge> edges,
+                                            List<Community> communities,
                                             List<String> entityTypes, List<DocumentOption> documents,
                                             GraphStats stats, boolean truncated, boolean neo4jEnabled) {}
 
-    public record GraphNode(String id, String name, String type, int degree) {}
+    public record GraphNode(String id, String name, String type, int degree,
+                            String componentId, String communityId, double importance) {}
+
+    public record Community(String id, String componentId, String label,
+                            int nodeCount, int relationCount, int documentCount) {}
 
     public record GraphEdge(String id, String source, String target, String predicate,
                             Double confidence, Integer evidenceChunkId, String evidenceText,
@@ -255,9 +263,144 @@ public class OrganizationKnowledgeGraphService {
             degree++;
         }
 
-        private GraphNode response() {
-            return new GraphNode(id, name, type, degree);
+        private GraphNode response(String componentId, String communityId, double importance) {
+            return new GraphNode(id, name, type, degree, componentId, communityId, importance);
         }
+    }
+
+    private record Topology(Map<String, String> componentIds,
+                            Map<String, String> communityIds,
+                            Map<String, Double> importance,
+                            List<Community> communities) {}
+
+    static Topology analyzeTopology(Map<String, MutableNode> nodes, List<GraphEdge> edges) {
+        Map<String, Map<String, Double>> adjacency = new LinkedHashMap<>();
+        nodes.keySet().stream().sorted().forEach(id -> adjacency.put(id, new LinkedHashMap<>()));
+        for (GraphEdge edge : edges) {
+            double weight = 1.0 + Math.log1p(Math.max(0, edge.supportCount() - 1))
+                    + (edge.crossDocument() ? 0.35 : 0.0);
+            adjacency.get(edge.source()).merge(edge.target(), weight, Double::sum);
+            adjacency.get(edge.target()).merge(edge.source(), weight, Double::sum);
+        }
+
+        Map<String, Double> rank = new LinkedHashMap<>();
+        int nodeCount = Math.max(1, nodes.size());
+        for (String id : adjacency.keySet()) rank.put(id, 1.0 / nodeCount);
+        for (int iteration = 0; iteration < 24; iteration++) {
+            Map<String, Double> next = new LinkedHashMap<>();
+            adjacency.keySet().forEach(id -> next.put(id, 0.15 / nodeCount));
+            for (String id : adjacency.keySet()) {
+                Map<String, Double> neighbors = adjacency.get(id);
+                double total = neighbors.values().stream().mapToDouble(Double::doubleValue).sum();
+                if (total == 0) {
+                    double share = 0.85 * rank.get(id) / nodeCount;
+                    next.replaceAll((ignored, value) -> value + share);
+                } else {
+                    for (var neighbor : neighbors.entrySet()) {
+                        next.merge(neighbor.getKey(), 0.85 * rank.get(id) * neighbor.getValue() / total, Double::sum);
+                    }
+                }
+            }
+            rank = next;
+        }
+        double maxRank = rank.values().stream().mapToDouble(Double::doubleValue).max().orElse(1.0);
+        Map<String, Double> importance = new LinkedHashMap<>();
+        for (String id : adjacency.keySet()) importance.put(id, rank.get(id) / Math.max(maxRank, 1e-9));
+
+        Map<String, String> componentIds = new LinkedHashMap<>();
+        List<List<String>> components = new ArrayList<>();
+        Set<String> seen = new HashSet<>();
+        for (String seed : adjacency.keySet()) {
+            if (!seen.add(seed)) continue;
+            List<String> component = new ArrayList<>();
+            ArrayDeque<String> queue = new ArrayDeque<>();
+            queue.add(seed);
+            while (!queue.isEmpty()) {
+                String id = queue.removeFirst();
+                component.add(id);
+                adjacency.get(id).keySet().stream().sorted().forEach(neighbor -> {
+                    if (seen.add(neighbor)) queue.addLast(neighbor);
+                });
+            }
+            component.sort(String::compareTo);
+            components.add(component);
+        }
+        components.sort(Comparator.<List<String>>comparingInt(List::size).reversed()
+                .thenComparing(component -> component.get(0)));
+        for (List<String> component : components) {
+            String componentId = stableId("component", component);
+            component.forEach(id -> componentIds.put(id, componentId));
+        }
+
+        Map<String, String> labels = new LinkedHashMap<>();
+        adjacency.keySet().forEach(id -> labels.put(id, id));
+        List<String> visitOrder = adjacency.keySet().stream()
+                .sorted(Comparator.<String>comparingDouble(importance::get).reversed().thenComparing(id -> id))
+                .toList();
+        for (int iteration = 0; iteration < 16; iteration++) {
+            boolean changed = false;
+            for (String id : visitOrder) {
+                if (adjacency.get(id).isEmpty()) continue;
+                Map<String, Double> scores = new HashMap<>();
+                for (var neighbor : adjacency.get(id).entrySet()) {
+                    scores.merge(labels.get(neighbor.getKey()), neighbor.getValue(), Double::sum);
+                }
+                scores.merge(labels.get(id), adjacency.get(id).values().stream()
+                        .mapToDouble(Double::doubleValue).sum() * 0.28, Double::sum);
+                String best = scores.entrySet().stream()
+                        .sorted(Map.Entry.<String, Double>comparingByValue().reversed()
+                                .thenComparing(Map.Entry::getKey))
+                        .map(Map.Entry::getKey).findFirst().orElse(labels.get(id));
+                if (!best.equals(labels.get(id))) {
+                    labels.put(id, best);
+                    changed = true;
+                }
+            }
+            if (!changed) break;
+        }
+        // Singletons inside a connected component join their strongest neighboring community.
+        Map<String, Long> sizes = labels.values().stream()
+                .collect(Collectors.groupingBy(value -> value, Collectors.counting()));
+        for (String id : visitOrder) {
+            if (sizes.getOrDefault(labels.get(id), 0L) != 1 || adjacency.get(id).isEmpty()) continue;
+            String best = adjacency.get(id).entrySet().stream()
+                    .max(Map.Entry.<String, Double>comparingByValue()
+                            .thenComparing(entry -> labels.get(entry.getKey())))
+                    .map(entry -> labels.get(entry.getKey())).orElse(labels.get(id));
+            labels.put(id, best);
+        }
+
+        Map<String, List<String>> membersByLabel = new LinkedHashMap<>();
+        for (String id : adjacency.keySet()) membersByLabel
+                .computeIfAbsent(labels.get(id), ignored -> new ArrayList<>()).add(id);
+        List<List<String>> communitiesByMembers = membersByLabel.values().stream()
+                .peek(members -> members.sort(String::compareTo))
+                .sorted(Comparator.<List<String>>comparingInt(List::size).reversed()
+                        .thenComparing(members -> members.get(0))).toList();
+        Map<String, String> communityIds = new LinkedHashMap<>();
+        List<Community> communities = new ArrayList<>();
+        for (List<String> members : communitiesByMembers) {
+            String communityId = stableId("community", members);
+            String componentId = componentIds.get(members.get(0));
+            members.forEach(id -> communityIds.put(id, communityId));
+            Set<String> memberSet = new HashSet<>(members);
+            List<GraphEdge> communityEdges = edges.stream()
+                    .filter(edge -> memberSet.contains(edge.source()) && memberSet.contains(edge.target())).toList();
+            int documentCount = (int) communityEdges.stream().flatMap(edge -> edge.evidences().stream())
+                    .map(GraphEvidence::fileUploadId).distinct().count();
+            String label = members.stream()
+                    .sorted(Comparator.<String>comparingDouble(importance::get).reversed().thenComparing(id -> id))
+                    .limit(2).map(id -> nodes.get(id).name).collect(Collectors.joining(" / "));
+            communities.add(new Community(communityId, componentId, label, members.size(),
+                    communityEdges.size(), documentCount));
+        }
+        return new Topology(Map.copyOf(componentIds), Map.copyOf(communityIds),
+                Map.copyOf(importance), List.copyOf(communities));
+    }
+
+    private static String stableId(String prefix, List<String> members) {
+        UUID id = UUID.nameUUIDFromBytes(String.join("\u001f", members).getBytes(StandardCharsets.UTF_8));
+        return prefix + "-" + id.toString().substring(0, 8);
     }
 
     private record FactKey(String sourceKey, String predicate, String targetKey) {
