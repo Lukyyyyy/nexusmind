@@ -1,6 +1,7 @@
 FROM maven:3.9.11-eclipse-temurin-17 AS build
 
 WORKDIR /workspace
+ENV MAVEN_OPTS="-Xmx512m -XX:MaxMetaspaceSize=256m"
 COPY settings-docker.xml /root/.m2/settings.xml
 COPY pom.xml ./
 COPY src ./src
