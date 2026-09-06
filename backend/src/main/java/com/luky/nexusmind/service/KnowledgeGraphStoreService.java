@@ -135,10 +135,11 @@ public class KnowledgeGraphStoreService {
                                 MERGE (sa)-[:REFERS_TO]->(s)
                                 MERGE (oa:EntityAlias {key: row.objectAliasKey})
                                 SET oa.name = row.objectMention,
-                                SET oa.name = row.objectMention,
                                     oa.normalizedName = row.objectMentionNormalizedName,
                                     oa.type = row.objectType, oa.scopeId = row.scopeId
                                 MERGE (oa)-[:REFERS_TO]->(o)
+                                MERGE (c:Claim {key: row.claimKey})
+                                SET c.candidateId = row.candidateId,
                                     c.scopeId = row.scopeId,
                                     c.predicate = row.predicate,
                                     c.normalizedPredicate = toLower(trim(row.predicate)),
