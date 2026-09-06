@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { VueMarkdownIt } from 'vue-markdown-shiki';
+import DocumentMarkdown from '@/components/custom/document-markdown.vue';
 defineOptions({ name: 'ChatMessage' });
 
 const props = defineProps<{ msg: Api.Chat.Message }>();
@@ -120,6 +121,7 @@ const loadingSourceNames = new Set<string>();
 const sourceDialogVisible = ref(false);
 const sourceLoading = ref(false);
 const selectedSource = ref<Api.KnowledgeBase.DocumentChunk | null>(null);
+const isSelectedSourceMarkdown = computed(() => selectedSource.value?.contentFormat === 'MARKDOWN');
 
 const sourceTokenPattern = /kb:([a-f\d]{32,64})(?::(\d+(?:\s*[、,，]\s*\d+)*))?/gi;
 const wrappedSourcePattern = /[（(]\s*(?:来源|编号)\s*[：:]\s*(kb:[a-f\d]{32,64}(?::\d+(?:\s*[、,，]\s*\d+)*)?)\s*[）)]/gi;
@@ -138,7 +140,7 @@ function renderSourceReferences(fileMd5: string, chunkIds?: string) {
   return chunkIds
     .split(/\s*[、,，]\s*/)
     .map(chunkId =>
-      `<button type="button" class="source-reference" data-file-md5="${fileMd5}" data-chunk-id="${chunkId}">${fileName} · 分片 ${chunkId}</button>`
+      `<a href="#" class="source-reference" data-file-md5="${fileMd5}" data-chunk-id="${chunkId}">${fileName} · 分片 ${chunkId}</a>`
     )
     .join(' ');
 }
@@ -196,6 +198,7 @@ async function handleContentClick(event: MouseEvent) {
   const fileMd5 = sourceButton?.dataset.fileMd5;
   const chunkId = Number(sourceButton?.dataset.chunkId);
   if (!fileMd5 || !Number.isInteger(chunkId)) return;
+  event.preventDefault();
 
   selectedSource.value = {
     fileMd5,
@@ -335,7 +338,15 @@ async function handleContentClick(event: MouseEvent) {
       :style="{ width: 'min(680px, 92vw)' }"
     >
       <NSpin :show="sourceLoading">
-        <div class="source-dialog__content">{{ selectedSource?.content || '' }}</div>
+        <div class="source-dialog__content">
+          <DocumentMarkdown
+            v-if="selectedSource && isSelectedSourceMarkdown"
+            class="markdown-body source-dialog__markdown"
+            :content="selectedSource.content || ''"
+            :file-md5="selectedSource.fileMd5"
+          />
+          <pre v-else class="source-dialog__plain-text">{{ selectedSource?.content || '' }}</pre>
+        </div>
       </NSpin>
     </NModal>
   </div>
@@ -343,17 +354,20 @@ async function handleContentClick(event: MouseEvent) {
 
 <style scoped lang="scss">
 :deep(.source-reference) {
-  display: inline-flex;
-  align-items: center;
-  border: 0;
+  display: inline;
   border-radius: 5px;
   background: #eef3ff;
   padding: 1px 6px;
+  box-decoration-break: clone;
   color: #245bdb;
   cursor: pointer;
   font: inherit;
   font-size: 0.86em;
   line-height: 1.55;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+  -webkit-box-decoration-break: clone;
+  white-space: normal;
   transition: background 0.16s ease;
 
   &:hover {
@@ -373,8 +387,18 @@ async function handleContentClick(event: MouseEvent) {
   color: #334155;
   font-size: 14px;
   line-height: 1.75;
-  white-space: pre-wrap;
   word-break: break-word;
+}
+
+.source-dialog__plain-text {
+  margin: 0;
+  font: inherit;
+  white-space: pre-wrap;
+}
+
+.source-dialog__markdown {
+  background: transparent;
+  color: inherit;
 }
 
 :global(.dark) .source-dialog__content {
@@ -706,6 +730,7 @@ async function handleContentClick(event: MouseEvent) {
     color: inherit;
     font-size: inherit;
     line-height: 1.75;
+    overflow-wrap: anywhere;
   }
 
   :deep(.vp-doc > :first-child) {
@@ -749,7 +774,20 @@ async function handleContentClick(event: MouseEvent) {
   :deep(.vp-doc a) {
     color: #245bdb;
     font-weight: inherit;
+    overflow-wrap: anywhere;
+    word-break: break-word;
     text-underline-offset: 3px;
+  }
+
+  :deep(.vp-doc img) {
+    max-width: 100%;
+    height: auto;
+  }
+
+  :deep(.vp-doc table) {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
   }
 
   :deep(.vp-doc strong) {
