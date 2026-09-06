@@ -132,14 +132,25 @@ public class KnowledgeGraphExtractionClient {
 
     public List<DictionaryEntry> dictionaryOnce(ModelConfigService.ResolvedModelConfig config,
             String input, String instructions, boolean resolveConflicts) {
-        String task = resolveConflicts
-                ? "根据原文证据解决以下名称映射冲突，只输出有证据的唯一映射；无法确定则不输出。"
-                : "逐段识别全文中的明确实体、别名、简称和局部指代。不得凭空补全。";
-        String prompt = task + "\n每项保留原切片 chunkId、name 在原切片中的字符位置 start（含）/end（不含）。"
-                + "位置按 Java/JavaScript UTF-16 字符索引。canonicalName 必须有提供文本的直接依据。"
-                + "同一切片中不同位置的该模型等指代可指向不同实体，无法确定则略过。"
-                + "只输出 JSON：{\"entries\":[{\"name\":\"SED\",\"type\":\"TASK\","
-                + "\"canonicalName\":\"声音事件检测\",\"chunkId\":1,\"start\":20,\"end\":23,\"evidence\":\"原文证据\"}]}";
+        String prompt;
+        if (resolveConflicts) {
+            prompt = "根据输入候选中的原文证据解决名称映射冲突，只输出有证据支持的唯一映射；无法确定则不输出。"
+                    + "\n只能选择输入中已有的完整条目，必须原样复制 name、type、canonicalName、chunkId、start、end 和 evidence，禁止修改、补全或新建条目。"
+                    + "没有可靠的唯一映射时返回 {\"entries\":[]}。只输出完整 JSON，不附加解释。"
+                    + "\n输出格式：{\"entries\":[{\"name\":\"SED\",\"type\":\"TASK\","
+                    + "\"canonicalName\":\"声音事件检测\",\"chunkId\":1,\"start\":20,\"end\":23,\"evidence\":\"原文证据\"}]}";
+        } else {
+            prompt = "从每个 CHUNK 中识别需要消歧的实体称呼，只处理别名、简称，以及“本文模型、该方法、本系统、所提模型”等依赖上下文的指代。"
+                    + "已经能够脱离本文独立识别的完整实体名称无需输出。"
+                    + "\n只能使用文档标题、CHUNK 正文和辅助上下文，不得使用外部知识或凭空补全。"
+                    + "canonicalName 必须逐字、连续地出现在文档标题或输入正文中，且不能仍是依赖上下文的模糊称呼。"
+                    + "\nevidence 必须从对应 CHUNK 正文中逐字复制，是包含 name 的连续原文；evidence 中必须只出现一次 name，并应足以在该 CHUNK 中唯一定位。"
+                    + "chunkId 必须是 name 实际所在的 CHUNK。字符位置由系统根据 evidence 计算，不要输出 start 和 end。"
+                    + "\n任一字段、映射或证据无法确定时省略该项，禁止猜测。没有可靠映射时返回 {\"entries\":[]}。单批最多输出 15 项。"
+                    + "输出前逐项检查以上条件，只输出完整 JSON，不附加解释。"
+                    + "\n输出格式：{\"entries\":[{\"name\":\"SED\",\"type\":\"TASK\","
+                    + "\"canonicalName\":\"声音事件检测\",\"chunkId\":1,\"evidence\":\"声音事件检测简称SED\"}]}";
+        }
         return single(config, withTemplate(prompt, instructions), input, "entries", DictionaryEntry.class, "实体词典");
     }
 

@@ -205,7 +205,7 @@ class GraphExtractionEngineTest {
     }
 
     @Test
-    void invalidDictionaryEvidenceDegradesWithVisibleCoverageInsteadOfFalseSuccess() {
+    void invalidDictionaryEntryIsDiscardedWithoutFailingWholeBatch() {
         when(client.dictionaryOnce(any(), anyString(), anyString(), anyBoolean()))
                 .thenReturn(
                         List.of(
@@ -214,9 +214,10 @@ class GraphExtractionEngineTest {
         when(client.relationsOnce(any(), anyString(), anyString()))
                 .thenAnswer(i -> relation(batch(i.getArgument(1))));
         engine.run("md5", "owner", false, factory);
-        assertEquals(2, engine.progress(1L).dictionary().failed());
+        assertEquals(0, engine.progress(1L).dictionary().failed());
+        assertEquals(2, engine.progress(1L).dictionary().succeeded());
         assertEquals(2, saved.size());
-        assertTrue(file.getGraphError().contains("实体词典 2/2"));
+        assertNull(file.getGraphError());
     }
 
     @Test
@@ -241,6 +242,24 @@ class GraphExtractionEngineTest {
         var entry =
                 new KnowledgeGraphExtractionClient.DictionaryEntry(
                         "SED", "TASK", "声音事件检测", 7, 0, 3, "声音事件检测简称SED。");
+        KnowledgeGraphExtractionClient.DictionaryEntry fixed =
+                org.springframework.test.util.ReflectionTestUtils.invokeMethod(
+                        engine, "locate", entry, batch);
+        assertEquals(108, fixed.start());
+        assertEquals(111, fixed.end());
+        Boolean valid =
+                org.springframework.test.util.ReflectionTestUtils.invokeMethod(
+                        engine, "valid", fixed, batch, "文档");
+        assertTrue(valid);
+    }
+
+    @Test
+    void computesMissingDictionaryOffsetsFromExactEvidence() {
+        var part = new GraphBatchPlan.Part(7, 100, "声音事件检测简称SED。");
+        var batch = new GraphBatchPlan.Batch(0, List.of(part), "", "");
+        var entry =
+                new KnowledgeGraphExtractionClient.DictionaryEntry(
+                        "SED", "TASK", "声音事件检测", 7, null, null, "声音事件检测简称SED");
         KnowledgeGraphExtractionClient.DictionaryEntry fixed =
                 org.springframework.test.util.ReflectionTestUtils.invokeMethod(
                         engine, "locate", entry, batch);

@@ -169,4 +169,33 @@ class KnowledgeGraphExtractionClientTest {
         assertTrue(requests.get(0).has("response_format"));
         assertFalse(requests.get(1).has("response_format"));
     }
+
+    @Test
+    void initialDictionaryPromptDelegatesOffsetsToBackend() throws Exception {
+        var config =
+                new ModelConfigService.ResolvedModelConfig(
+                        1L,
+                        null,
+                        null,
+                        "test",
+                        "http://127.0.0.1:" + server.getAddress().getPort(),
+                        null,
+                        "test-model",
+                        null,
+                        null,
+                        8192,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null);
+        response = envelope("{\"entries\":[]}", "stop");
+        client.dictionaryOnce(config, "text", "template", false);
+        String prompt = requests.get(0).path("messages").path(0).path("content").asText();
+        assertTrue(prompt.contains("字符位置由系统根据 evidence 计算"));
+        assertTrue(prompt.contains("不要输出 start 和 end"));
+        assertTrue(prompt.contains("evidence 中必须只出现一次 name"));
+        assertTrue(prompt.contains("template"));
+    }
 }

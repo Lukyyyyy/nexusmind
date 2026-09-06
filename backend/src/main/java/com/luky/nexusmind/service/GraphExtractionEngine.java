@@ -421,16 +421,32 @@ public class GraphExtractionEngine {
                         config -> {
                             current(f.getId(), token);
                             if (dictionary) {
-                                var entries =
+                                var located =
                                         client
                                                 .dictionaryOnce(
                                                         config, prompt, s.instructions, false)
                                                 .stream()
                                                 .map(e -> locate(e, batch))
                                                 .toList();
-                                if (entries.stream().anyMatch(e -> !valid(e, batch, s.title)))
-                                    throw new IllegalStateException("词典条目的位置或证据校验失败");
-                                return entries;
+                                Map<String, Long> discarded =
+                                        located.stream()
+                                                .map(e -> validationIssue(e, batch, s.title))
+                                                .filter(Objects::nonNull)
+                                                .collect(
+                                                        java.util.stream.Collectors.groupingBy(
+                                                                issue -> issue,
+                                                                LinkedHashMap::new,
+                                                                java.util.stream.Collectors.counting()));
+                                if (!discarded.isEmpty())
+                                    logger.warn(
+                                            "实体词典丢弃未通过校验的条目: fileId={}, batch={}, count={}, reasons={}",
+                                            f.getId(),
+                                            batch.index() + 1,
+                                            discarded.values().stream().mapToLong(Long::longValue).sum(),
+                                            discarded);
+                                return located.stream()
+                                        .filter(e -> valid(e, batch, s.title))
+                                        .toList();
                             }
                             return client.relationsOnce(config, prompt, s.instructions);
                         })
@@ -672,8 +688,7 @@ public class GraphExtractionEngine {
                 + c.getObjectName();
     }
 
-    // Models are poor character counters. Repair offsets only when exact quoted evidence uniquely
-    // identifies the mention.
+    // The model supplies semantics and an exact quote; deterministic code owns UTF-16 offsets.
     private DictionaryEntry locate(DictionaryEntry e, GraphBatchPlan.Batch batch) {
         if (e == null
                 || e.chunkId() == null
@@ -681,29 +696,52 @@ public class GraphExtractionEngine {
                 || e.name().isBlank()
                 || e.evidence() == null
                 || e.evidence().isBlank()) return e;
-        int mention = e.evidence().indexOf(e.name());
-        if (mention < 0 || e.evidence().indexOf(e.name(), mention + 1) >= 0) return e;
         List<DictionaryEntry> matches = new ArrayList<>();
         for (var p : batch.parts())
             if (p.chunkId() == e.chunkId()) {
-                int at = p.text().indexOf(e.evidence());
-                if (at >= 0 && p.text().indexOf(e.evidence(), at + 1) < 0) {
-                    int start = p.start() + at + mention;
-                    matches.add(
-                            new DictionaryEntry(
-                                    e.name(),
-                                    e.type(),
-                                    e.canonicalName(),
-                                    e.chunkId(),
-                                    start,
-                                    start + e.name().length(),
-                                    e.evidence()));
-                }
+                for (int evidenceAt = p.text().indexOf(e.evidence());
+                        evidenceAt >= 0;
+                        evidenceAt = p.text().indexOf(e.evidence(), evidenceAt + 1))
+                    for (int mentionAt = e.evidence().indexOf(e.name());
+                            mentionAt >= 0;
+                            mentionAt = e.evidence().indexOf(e.name(), mentionAt + 1)) {
+                        int start = p.start() + evidenceAt + mentionAt;
+                        matches.add(
+                                new DictionaryEntry(
+                                        e.name(),
+                                        e.type(),
+                                        e.canonicalName(),
+                                        e.chunkId(),
+                                        start,
+                                        start + e.name().length(),
+                                        e.evidence()));
+                    }
             }
-        return matches.size() == 1 ? matches.get(0) : e;
+        matches =
+                matches.stream()
+                        .collect(
+                                java.util.stream.Collectors.toMap(
+                                        value -> value.start() + ":" + value.end(),
+                                        value -> value,
+                                        (left, right) -> left,
+                                        LinkedHashMap::new))
+                        .values()
+                        .stream()
+                        .toList();
+        if (matches.size() == 1) return matches.get(0);
+        if (e.start() != null && e.end() != null)
+            return matches.stream()
+                    .filter(value -> e.start().equals(value.start()) && e.end().equals(value.end()))
+                    .findFirst()
+                    .orElse(e);
+        return e;
     }
 
     private boolean valid(DictionaryEntry e, GraphBatchPlan.Batch batch, String title) {
+        return validationIssue(e, batch, title) == null;
+    }
+
+    private String validationIssue(DictionaryEntry e, GraphBatchPlan.Batch batch, String title) {
         if (e == null
                 || e.chunkId() == null
                 || e.start() == null
@@ -714,23 +752,24 @@ public class GraphExtractionEngine {
                 || e.canonicalName().isBlank()
                 || e.type() == null
                 || e.evidence() == null
-                || e.evidence().isBlank()
-                || KnowledgeGraphExtractionService.isAmbiguousEntityName(e.canonicalName()))
-            return false;
-        return batch.parts().stream()
-                .anyMatch(
-                        p ->
-                                p.chunkId() == e.chunkId()
-                                        && e.start() >= p.start()
-                                        && e.end() <= p.end()
-                                        && e.end() > e.start()
-                                        && p.text()
-                                                .substring(
-                                                        e.start() - p.start(), e.end() - p.start())
-                                                .equals(e.name())
-                                        && evidenceCoversMention(e, p)
-                                        && (GraphBatchPlan.input(batch).contains(e.canonicalName())
-                                                || title.contains(e.canonicalName())));
+                || e.evidence().isBlank()) return "MISSING_REQUIRED_FIELD";
+        if (KnowledgeGraphExtractionService.isAmbiguousEntityName(e.canonicalName()))
+            return "AMBIGUOUS_CANONICAL_NAME";
+        var part =
+                batch.parts().stream()
+                        .filter(p -> p.chunkId() == e.chunkId())
+                        .findFirst()
+                        .orElse(null);
+        if (part == null) return "CHUNK_NOT_IN_BATCH";
+        if (e.start() < part.start() || e.end() > part.end() || e.end() <= e.start())
+            return "INVALID_OFFSETS";
+        if (!part.text()
+                .substring(e.start() - part.start(), e.end() - part.start())
+                .equals(e.name())) return "MENTION_MISMATCH";
+        if (!evidenceCoversMention(e, part)) return "EVIDENCE_MISMATCH";
+        if (!GraphBatchPlan.input(batch).contains(e.canonicalName())
+                && !title.contains(e.canonicalName())) return "CANONICAL_NAME_NOT_IN_DOCUMENT";
+        return null;
     }
 
     private boolean evidenceCoversMention(DictionaryEntry e, GraphBatchPlan.Part p) {
