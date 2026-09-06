@@ -114,7 +114,10 @@ function getFlatRequest(options: Partial<RequestOption<App.Service.Response>> = 
           return;
         }
 
-        let message = '请求失败，请稍后重试';
+        let message = error.response?.data?.message || '请求失败，请稍后重试';
+        if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+          message = '请求超时，操作可能仍在处理中，请刷新状态后再重试';
+        }
         let backendErrorCode = '';
 
         // get backend error message and code

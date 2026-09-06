@@ -92,7 +92,8 @@ public class VectorizationService {
             try {
                 esDocuments = IntStream.range(0, chunks.size())
                         .mapToObj(i -> new EsDocument(
-                                UUID.randomUUID().toString(),
+                                UUID.nameUUIDFromBytes((fileMd5 + ":" + userId + ":" + chunks.get(i).getChunkId())
+                                        .getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString(),
                                 fileMd5,
                                 chunks.get(i).getChunkId(),
                                 chunks.get(i).getContent(),
@@ -112,8 +113,8 @@ public class VectorizationService {
                 buildSpan.close();
             }
 
-            processingStatusService.markRunning(fileMd5, userId, ProcessingStage.INDEXING, "正在写入检索索引");
-            elasticsearchService.bulkIndex(esDocuments); // 批量存储到 Elasticsearch
+            FileTaskControl.write(() -> processingStatusService.markRunning(fileMd5, userId, ProcessingStage.INDEXING, "正在写入检索索引"));
+            FileTaskControl.write(() -> elasticsearchService.bulkIndex(esDocuments)); // 批量存储到 Elasticsearch
 
             span.attribute("nexusmind.vectorize.status", "success");
             logger.info("向量化完成，fileMd5: {}", fileMd5);

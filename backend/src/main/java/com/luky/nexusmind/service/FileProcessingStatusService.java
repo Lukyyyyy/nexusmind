@@ -11,6 +11,8 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Objects;
+import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -29,6 +31,13 @@ public class FileProcessingStatusService {
     @Transactional
     public FileProcessingStatus markQueued(FileProcessingTask task) {
         FileProcessingStatus status = getOrCreate(task);
+        if (status.getId() != null && (status.getState() == ProcessingState.RUNNING
+                || status.getState() == ProcessingState.PENDING)) {
+            throw new IllegalStateException("文件已有待处理任务");
+        }
+        task.setAttemptId(UUID.randomUUID().toString());
+        status.setAttemptId(task.getAttemptId());
+        status.setLastSuccessfulStage(null);
         status.setParseEngine(task.getParseEngine() == null ? ParseEngine.AUTO : task.getParseEngine());
         status.setChunkSize(task.getChunkSize());
         status.setActualParseEngine(null);
@@ -62,7 +71,9 @@ public class FileProcessingStatusService {
                 accumulatedDurationWithPreviousAttempt(status));
         status.setParseEngine(task.getParseEngine() == null ? status.getParseEngine() : task.getParseEngine());
         status.setChunkSize(task.getChunkSize() == null ? status.getChunkSize() : task.getChunkSize());
-        status.setCurrentStage(ProcessingStage.QUEUED);
+        task.setAttemptId(UUID.randomUUID().toString());
+        status.setAttemptId(task.getAttemptId());
+        // 保留数据库中的断点；消息中的 resumeFromStage 可能早已过时。
         status.setState(ProcessingState.PENDING);
         status.setMessage("等待重新处理");
         status.setErrorMessage(null);
@@ -89,7 +100,10 @@ public class FileProcessingStatusService {
 
     @Transactional
     public void markRunning(FileProcessingTask task, ProcessingStage stage, String message) {
-        FileProcessingStatus status = getOrCreate(task);
+        FileProcessingStatus status = repository.findByFileMd5AndUserIdForUpdate(
+                task.getFileMd5(), task.getUserId()).orElse(null);
+        if (status == null) return;
+        if (!acceptsUpdate(status, task)) return;
         applyRunning(status, stage, message);
         saveAndPublish(status);
     }
@@ -106,9 +120,11 @@ public class FileProcessingStatusService {
         if (status.getProcessingStartedAt() == null) {
             status.setProcessingStartedAt(LocalDateTime.now());
         }
-        if (shouldAdvanceStage(status.getCurrentStage(), stage)) {
-            status.setCurrentStage(stage);
-            status.setMessage(message);
+        status.setCurrentStage(stage);
+        status.setMessage(message);
+        if (stage == ProcessingStage.PARSING) {
+            status.setLastSuccessfulStage(null);
+            status.setParsedChunkCount(0);
         }
         status.setState(ProcessingState.RUNNING);
         status.setErrorMessage(null);
@@ -116,11 +132,13 @@ public class FileProcessingStatusService {
 
     @Transactional
     public void markParsed(FileProcessingTask task, int chunkCount) {
-        FileProcessingStatus status = getOrCreate(task);
-        if (shouldAdvanceStage(status.getCurrentStage(), ProcessingStage.CHUNKING)) {
-            status.setCurrentStage(ProcessingStage.CHUNKING);
-            status.setMessage("解析和切片完成");
-        }
+        FileProcessingStatus status = repository.findByFileMd5AndUserIdForUpdate(
+                task.getFileMd5(), task.getUserId()).orElse(null);
+        if (status == null) return;
+        if (!acceptsUpdate(status, task)) return;
+        status.setLastSuccessfulStage(ProcessingStage.CHUNKING);
+        status.setCurrentStage(ProcessingStage.CHUNKING);
+        status.setMessage("解析和切片完成");
         status.setState(ProcessingState.RUNNING);
         status.setParsedChunkCount(chunkCount);
         status.setErrorMessage(null);
@@ -137,7 +155,11 @@ public class FileProcessingStatusService {
 
     @Transactional
     public void markCompleted(FileProcessingTask task, int vectorizedCount, long esDocumentCount) {
-        FileProcessingStatus status = getOrCreate(task);
+        FileProcessingStatus status = repository.findByFileMd5AndUserIdForUpdate(
+                task.getFileMd5(), task.getUserId()).orElse(null);
+        if (status == null) return;
+        if (!acceptsUpdate(status, task)) return;
+        status.setLastSuccessfulStage(ProcessingStage.COMPLETED);
         status.setCurrentStage(ProcessingStage.COMPLETED);
         status.setState(ProcessingState.SUCCEEDED);
         status.setVectorizedCount(vectorizedCount);
@@ -150,11 +172,14 @@ public class FileProcessingStatusService {
 
     @Transactional
     public void markFailed(FileProcessingTask task, ProcessingStage stage, Exception exception) {
-        FileProcessingStatus status = getOrCreate(task);
+        FileProcessingStatus status = repository.findByFileMd5AndUserIdForUpdate(
+                task.getFileMd5(), task.getUserId()).orElse(null);
+        if (status == null) return;
+        if (!acceptsUpdate(status, task) || status.getState() == ProcessingState.SUCCEEDED) return;
         status.setCurrentStage(stage == null ? status.getCurrentStage() : stage);
         status.setState(ProcessingState.FAILED);
         status.setMessage("处理失败");
-        status.setErrorMessage(truncate(exception.getMessage(), 2000));
+        status.setErrorMessage(rootCauseMessage(exception));
         status.setCompletedAt(LocalDateTime.now());
         saveAndPublish(status);
     }
@@ -181,7 +206,7 @@ public class FileProcessingStatusService {
     }
 
     private FileProcessingStatus getOrCreate(FileProcessingTask task) {
-        return repository.findByFileMd5AndUserId(task.getFileMd5(), task.getUserId())
+        return repository.findByFileMd5AndUserIdForUpdate(task.getFileMd5(), task.getUserId())
                 .orElseGet(() -> {
                     FileProcessingStatus status = new FileProcessingStatus();
                     status.setFileMd5(task.getFileMd5());
@@ -200,26 +225,32 @@ public class FileProcessingStatusService {
         return saved;
     }
 
-    private boolean shouldAdvanceStage(ProcessingStage currentStage, ProcessingStage nextStage) {
-        if (nextStage == null) {
-            return false;
-        }
-        if (currentStage == null) {
-            return true;
-        }
-        return stageOrder(nextStage) >= stageOrder(currentStage);
+    /** 原子认领消息，避免检查版本后用户又发起新一轮重试。RUNNING 允许崩溃后的 Kafka 重投恢复。 */
+    @Transactional
+    public boolean beginAttempt(FileProcessingTask task) {
+        var existing = repository.findByFileMd5AndUserIdForUpdate(task.getFileMd5(), task.getUserId());
+        if (existing.isEmpty()) return false;
+        var status = existing.get();
+        if (!acceptsUpdate(status, task) || status.getState() == ProcessingState.SUCCEEDED
+                || status.getState() == ProcessingState.FAILED) return false;
+        status.setState(ProcessingState.RUNNING);
+        saveAndPublish(status);
+        return true;
     }
 
-    private int stageOrder(ProcessingStage stage) {
-        return switch (stage) {
-            case QUEUED -> 0;
-            case PARSING -> 1;
-            case CHUNKING -> 2;
-            case VECTORIZING -> 3;
-            case INDEXING -> 4;
-            case COMPLETED -> 5;
-            case FAILED -> 6;
-        };
+    private boolean acceptsUpdate(FileProcessingStatus status, FileProcessingTask task) {
+        return Objects.equals(status.getAttemptId(), task.getAttemptId());
+    }
+
+    private String rootCauseMessage(Throwable exception) {
+        Throwable root = exception;
+        java.util.Set<Throwable> visited = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        while (root.getCause() != null && visited.add(root) && !visited.contains(root.getCause())) {
+            root = root.getCause();
+        }
+        // 错误可展示给用户，但不保留 URL 的签名参数。
+        String message = root.getClass().getSimpleName() + ": " + Objects.toString(root.getMessage(), "处理失败");
+        return truncate(message.replaceAll("(https?://[^\\s?]+)\\?[^\\s]+", "$1?[已隐藏参数]"), 2000);
     }
 
     private String truncate(String message, int maxLength) {

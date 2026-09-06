@@ -134,7 +134,7 @@ onMounted(async () => {
     <header class="page-heading">
       <div>
         <h1>组织知识图谱</h1>
-        <p v-if="activeSection === 'graph'">公开、组织内和私人图谱相互隔离，并保留每条关系的原文证据。</p>
+        <p v-if="activeSection === 'graph'">在权限隔离下保留各文档事实与证据，并通过规范化实体扩展跨文档关系。</p>
         <p v-else>按文档类型维护领域抽取要求，统一控制进入组织图谱的知识质量。</p>
       </div>
       <NButton v-if="activeSection === 'graph'" secondary :loading="loading" @click="refreshPage">
@@ -203,6 +203,9 @@ onMounted(async () => {
         <div>
           <small>关系</small><strong>{{ graph.stats.relationCount }}</strong>
           <em v-if="graph.stats.disputedRelationCount > 0">{{ graph.stats.disputedRelationCount }} 条存在不同陈述</em>
+          <em v-if="graph.stats.crossDocumentRelationCount > 0" class="cross-document-stat">
+            {{ graph.stats.crossDocumentRelationCount }} 条由多文档共同支持
+          </em>
         </div>
       </div>
       <div class="stat-item">
@@ -250,6 +253,7 @@ onMounted(async () => {
               <div class="detail-kicker">关系详情</div>
             </div>
             <h2>{{ selectedEdge.predicate }}</h2>
+            <NTag v-if="selectedEdge.crossDocument" size="small" type="success">跨文档共同事实</NTag>
             <NText depth="3">
               最高置信度 {{ Math.round(selectedEdge.confidence * 100) }}%
               · {{ selectedEdge.documentCount }} 份文档的 {{ selectedEdge.supportCount }} 条证据
@@ -300,7 +304,7 @@ onMounted(async () => {
                 @click="showRelationDetail(edge)"
               >
                 <span>{{ edge.predicate }}</span>
-                <small>{{ edge.fileName }}</small>
+                <small>{{ edge.crossDocument ? `${edge.documentCount} 份文档共同支持` : edge.fileName }}</small>
               </button>
             </div>
           </template>
@@ -406,6 +410,7 @@ onMounted(async () => {
 .stat-item small, .source-box small { display: block; color: #788397; font-size: 12px; }
 .stat-item strong { display: block; margin-top: 2px; color: #172033; font-size: 23px; font-weight: 650; }
 .stat-item em { display: block; color: #d97706; font-size: 11px; font-style: normal; }
+.stat-item em.cross-document-stat { color: #0f8c72; }
 .stat-icon { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 50%; font-size: 21px; }
 .stat-icon.entity { color: #245bdb; background: #eef3ff; }
 .stat-icon.relation { color: #5558c9; background: #ececfc; }

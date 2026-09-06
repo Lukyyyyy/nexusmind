@@ -2,6 +2,7 @@
 import { CanvasEvent, EdgeEvent, Graph, NodeEvent } from '@antv/g6';
 import type { GraphData, IElementEvent } from '@antv/g6';
 import SvgIcon from '@/components/custom/svg-icon.vue';
+import { layoutDocumentGraph } from './document-graph-layout';
 
 defineOptions({ name: 'KnowledgeGraphCanvas' });
 
@@ -9,6 +10,7 @@ const props = withDefaults(
   defineProps<{
     nodes: Api.KnowledgeGraph.GraphNode[];
     edges: Api.KnowledgeGraph.GraphEdge[];
+    document?: { id: string; name: string };
     showInspector?: boolean;
     fullscreenTarget?: HTMLElement | null;
   }>(),
@@ -30,6 +32,17 @@ const selectedNodeId = ref<string | null>(null);
 const rendering = ref(false);
 const isFullscreen = ref(false);
 let graph: Graph | null = null;
+let resizeFrame = 0;
+const canvasResizeObserver = new ResizeObserver(() => {
+  cancelAnimationFrame(resizeFrame);
+  resizeFrame = requestAnimationFrame(() => {
+    if (props.document && graph && !rendering.value) void fitView(false);
+  });
+});
+watch(containerRef, element => {
+  canvasResizeObserver.disconnect();
+  if (element) canvasResizeObserver.observe(element);
+});
 
 const typeColors: Record<string, string> = {
   PERSON: '#8b6fb3',
@@ -61,13 +74,17 @@ const typeOptions = computed(() => {
 
 const visibleData = computed(() => {
   const normalizedKeyword = keyword.value.trim().toLocaleLowerCase();
+  const documentMatched = Boolean(
+    normalizedKeyword && props.document?.name.toLocaleLowerCase().includes(normalizedKeyword)
+  );
   const directlyMatchedIds = new Set(
     props.nodes
       .filter(node => !selectedType.value || node.type === selectedType.value)
-      .filter(node => !normalizedKeyword || node.name.toLocaleLowerCase().includes(normalizedKeyword))
+      .filter(
+        node => documentMatched || !normalizedKeyword || node.name.toLocaleLowerCase().includes(normalizedKeyword)
+      )
       .map(node => node.id)
   );
-
   const visibleIds = new Set(directlyMatchedIds);
   if (normalizedKeyword) {
     props.edges.forEach(edge => {
@@ -83,12 +100,47 @@ const visibleData = computed(() => {
   return { nodes, edges };
 });
 
+const documentNode = computed(() => props.document ? {
+  id: `__document:${props.document.id}`, name: props.document.name, type: '文档', degree: visibleData.value.nodes.length
+} : null);
+
 const selectedEdge = computed(() => props.edges.find(edge => edge.id === selectedEdgeId.value) || null);
-const selectedNode = computed(() => props.nodes.find(node => node.id === selectedNodeId.value) || null);
+const selectedNode = computed(() => [...props.nodes, ...(documentNode.value ? [documentNode.value] : [])].find(node => node.id === selectedNodeId.value) || null);
+
+function edgeCurveOffset(edgeId: string) {
+  const hash = Array.from(edgeId).reduce((value, char) => (value * 31 + char.charCodeAt(0)) >>> 0, 0);
+  return (hash % 2 === 0 ? 1 : -1) * (28 + hash % 3 * 8);
+}
 
 function graphData(): GraphData {
   const nodes = visibleData.value.nodes;
   const edges = visibleData.value.edges;
+  if (documentNode.value) {
+    const layout = layoutDocumentGraph(nodes, edges, documentNode.value.name);
+    return {
+      nodes: [
+        { id: documentNode.value.id, data: { ...documentNode.value, documentRoot: true, displayLabel: layout.centerLabel },
+          style: { x: 0, y: 0 } },
+        ...nodes.map(node => {
+          const position = layout.positions.get(node.id)!;
+          return { id: node.id, data: { ...node, core: position.core, displayLabel: position.label },
+            style: { x: position.x, y: position.y } };
+        })
+      ],
+      edges: [
+        ...edges.map(edge => {
+          const sourcePosition = layout.positions.get(edge.source);
+          const targetPosition = layout.positions.get(edge.target);
+          const layoutTree = sourcePosition?.parent === edge.target || targetPosition?.parent === edge.source;
+          return { id: edge.id, source: edge.source, target: edge.target,
+            data: { ...edge, layoutTree, layoutCurveOffset: layoutTree ? 0 : edgeCurveOffset(edge.id) } };
+        }),
+        ...layout.roots.map(id => ({ id: `__document-link:${id}`, source: documentNode.value!.id,
+          target: id, data: { documentLink: true, traversable: true,
+            relationKind: 'DOCUMENT_PROVENANCE', predicate: '文档声明', navigationOnly: true } }))
+      ]
+    };
+  }
   const adjacency = new Map(nodes.map(node => [node.id, new Set<string>()]));
 
   edges.forEach(edge => {
@@ -152,25 +204,30 @@ function nodeStyle(datum: { data?: Record<string, unknown> }) {
   const node = datum.data as unknown as Api.KnowledgeGraph.GraphNode;
   const color = nodeColor(node.type);
   return {
-    size: Math.min(58, 34 + Math.max(node.degree - 1, 0) * 4),
+    size: datum.data?.documentRoot ? 76 : Math.min(58, 34 + Math.max(node.degree - 1, 0) * 4),
     fill: color,
     fillOpacity: themeStore.darkMode ? 0.86 : 0.9,
     stroke: themeStore.darkMode ? '#e2e8f0' : '#ffffff',
     lineWidth: 2,
     shadowColor: `${color}55`,
     shadowBlur: 12,
-    labelText: node.name,
+    labelText: String(datum.data?.displayLabel ?? node.name),
     labelPlacement: 'bottom' as const,
     labelOffsetY: 8,
     labelFill: themeStore.darkMode ? '#e5e7eb' : '#334155',
     labelFontSize: 12,
-    labelFontWeight: 500,
-    labelWordWrap: true,
-    labelMaxWidth: 120
+    labelFontWeight: datum.data?.core || datum.data?.documentRoot ? 600 : 500,
+    labelWordWrap: !props.document,
+    labelMaxWidth: datum.data?.documentRoot ? 300 : datum.data?.core ? 210 : 160,
+    labelMaxLines: props.document ? String(datum.data?.displayLabel || node.name).split('\n').length : 1,
+    labelLineHeight: 18
   };
 }
 
 function edgeStyle(datum: { data?: Record<string, unknown> }) {
+  if (datum.data?.documentLink) {
+    return { stroke: '#2787bd', opacity: 0.4, lineWidth: 1.5, endArrow: true, endArrowSize: 6, label: false };
+  }
   if (datum.data?.layoutOnly) {
     return {
       strokeOpacity: 0,
@@ -180,14 +237,21 @@ function edgeStyle(datum: { data?: Record<string, unknown> }) {
     };
   }
   const edge = datum.data as unknown as Api.KnowledgeGraph.GraphEdge;
+  let stroke = themeStore.darkMode ? '#718096' : '#a5b1c1';
+  if (edge.crossDocument) stroke = '#0f8c72';
+  if (edge.disputed) stroke = '#d97706';
+  const supplementary = datum.data?.layoutTree === false;
+  let lineWidth = edge.crossDocument ? 2 : supplementary ? 1 : 1.5;
+  if (selectedEdgeId.value === edge.id) lineWidth = 3;
   return {
-    stroke: edge.disputed ? '#d97706' : themeStore.darkMode ? '#718096' : '#a5b1c1',
-    lineWidth: selectedEdgeId.value === edge.id ? 3 : 1.5,
+    stroke,
+    lineWidth,
+    opacity: supplementary ? 0.42 : 0.82,
+    curveOffset: Number(datum.data?.layoutCurveOffset || 0),
     lineDash: edge.disputed ? [6, 4] : undefined,
-    opacity: selectedEdgeId.value && selectedEdgeId.value !== edge.id ? 0.35 : 0.82,
     endArrow: true,
     endArrowSize: 8,
-    labelText: edge.predicate,
+    labelText: supplementary ? undefined : edge.predicate,
     labelFill: themeStore.darkMode ? '#cbd5e1' : '#475569',
     labelFontSize: 11,
     labelBackground: true,
@@ -205,10 +269,10 @@ async function createGraph() {
     container: containerRef.value,
     autoResize: true,
     padding: 64,
-    autoFit: { type: 'view', options: { when: 'always', direction: 'both' } },
+    autoFit: props.document ? undefined : { type: 'view', options: { when: 'always', direction: 'both' } },
     animation: false,
     data: graphData(),
-    layout: {
+    layout: documentNode.value ? undefined : {
       type: 'd3-force',
       animation: false,
       link: { distance: 108, strength: 0.8 },
@@ -230,16 +294,27 @@ async function createGraph() {
       }
     },
     edge: {
-      type: 'line',
+      type: datum => datum.data?.layoutTree === false ? 'quadratic' : 'line',
       style: edgeStyle,
       state: {
-        selected: {
+        selected: datum => ({
           stroke: '#4f46e5',
           lineWidth: 3,
-          opacity: 1
-        }
+          opacity: 1,
+          labelText: String(datum.data?.predicate || '')
+        })
       }
     },
+    plugins: [{
+      type: 'tooltip',
+      enable: (_event: IElementEvent, items: { data?: Record<string, unknown> }[]) => Boolean(items[0]?.data?.name),
+      getContent: async (_event: IElementEvent, items: { data?: Record<string, unknown> }[]) => {
+        const content = window.document.createElement('div');
+        content.textContent = String(items[0]?.data?.name || '');
+        content.style.cssText = 'max-width: 320px; white-space: normal; overflow-wrap: anywhere';
+        return content;
+      }
+    }],
     behaviors: ['drag-canvas', 'zoom-canvas', 'drag-element', 'hover-activate']
   });
 
@@ -265,6 +340,22 @@ async function refreshGraph() {
 }
 
 async function fitView(animated = true) {
+  if (graph && documentNode.value) {
+    const [width, height] = graph.getSize();
+    if (!width || !height) return;
+    let extentX = 180;
+    let extentY = 160;
+    for (const node of graph.getNodeData()) {
+      const label = String(node.data?.displayLabel || node.data?.name || '');
+      const lines = label.split('\n');
+      extentX = Math.max(extentX, Math.abs(Number(node.style?.x || 0)) + 160);
+      extentY = Math.max(extentY, Math.abs(Number(node.style?.y || 0)) + 50 + lines.length * 18);
+    }
+    // Fit symmetric bounds around the document, not the off-center bounds of unequal branches.
+    await graph.zoomTo(Math.max(0.01, Math.min(1, (width - 48) / (2 * extentX), (height - 48) / (2 * extentY))), false);
+    await graph.focusElement(documentNode.value.id, animated ? { duration: 300 } : false);
+    return;
+  }
   await graph?.fitView(
     { when: 'always', direction: 'both' },
     animated ? { duration: 300 } : undefined
@@ -274,7 +365,13 @@ async function fitView(animated = true) {
 async function relayout() {
   rendering.value = true;
   try {
-    await graph?.layout();
+    if (props.document) {
+      await clearSelection();
+      graph?.setData(graphData());
+      await graph?.render();
+    } else {
+      await graph?.layout();
+    }
     await fitView();
   } finally {
     rendering.value = false;
@@ -282,6 +379,7 @@ async function relayout() {
 }
 
 async function selectEdge(edgeId: string) {
+  if (!props.edges.some(edge => edge.id === edgeId)) return;
   await resetElementStates();
   selectedEdgeId.value = edgeId;
   selectedNodeId.value = null;
@@ -303,6 +401,7 @@ async function resetElementStates() {
   if (!graph) return;
   const states = Object.fromEntries([
     ...visibleData.value.nodes.map(node => [node.id, []]),
+    ...(documentNode.value ? [[documentNode.value.id, []]] : []),
     ...visibleData.value.edges.map(edge => [edge.id, []])
   ]);
   await graph.setElementState(states, false);
@@ -332,13 +431,13 @@ function syncFullscreenState() {
 }
 
 watch(
-  () => [props.nodes, props.edges, keyword.value, selectedType.value, themeStore.darkMode],
+  () => [props.nodes, props.edges, props.document, keyword.value, selectedType.value, themeStore.darkMode],
   () => {
     selectedEdgeId.value = null;
     selectedNodeId.value = null;
     refreshGraph();
   },
-  { deep: true }
+  { deep: true, flush: 'post' }
 );
 
 onMounted(() => {
@@ -347,6 +446,8 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   document.removeEventListener('fullscreenchange', syncFullscreenState);
+  canvasResizeObserver.disconnect();
+  cancelAnimationFrame(resizeFrame);
   graph?.destroy();
 });
 </script>
@@ -355,7 +456,7 @@ onBeforeUnmount(() => {
   <div ref="frameRef" class="graph-frame">
     <div class="graph-toolbar">
       <div class="min-w-0 flex flex-1 flex-wrap items-center gap-8px">
-        <NInput v-model:value="keyword" clearable size="small" placeholder="搜索实体" class="max-w-full" style="width: 210px">
+        <NInput v-model:value="keyword" clearable size="small" placeholder="搜索实体或文档" class="max-w-full" style="width: 210px">
           <template #prefix>
             <SvgIcon icon="mdi:magnify" />
           </template>
@@ -370,7 +471,7 @@ onBeforeUnmount(() => {
           style="width: 150px"
         />
         <NText depth="3" class="text-12px">
-          {{ visibleData.nodes.length }} 个实体 · {{ visibleData.edges.length }} 条关系
+          {{ document ? '1 篇文档 · ' : '' }}{{ visibleData.nodes.length }} 个实体 · {{ visibleData.edges.length }} 条关系
         </NText>
       </div>
       <NSpace :size="8">
@@ -407,7 +508,8 @@ onBeforeUnmount(() => {
             {{ selectedNode.type }}
           </NTag>
           <h3>{{ selectedNode.name }}</h3>
-          <NText depth="3">连接了 {{ selectedNode.degree }} 条关系</NText>
+          <NText v-if="selectedNode.id === documentNode?.id" depth="3">文档节点已入图，可通过标题检索；蓝色连线折叠表示 Document → Claim → Entity 溯源链路</NText>
+          <NText v-else depth="3">连接了 {{ selectedNode.degree }} 条关系</NText>
         </template>
       </aside>
     </div>

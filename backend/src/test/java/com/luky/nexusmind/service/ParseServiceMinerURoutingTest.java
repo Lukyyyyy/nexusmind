@@ -99,7 +99,7 @@ class ParseServiceMinerURoutingTest {
         }
 
         @Override
-        public String parseToText(byte[] fileBytes, String fileName) throws IOException {
+        public String parseDocument(byte[] fileBytes, String fileName, String fileMd5) throws IOException {
             parseToTextCalled = true;
             throw new IOException("MinerU should not be called for markdown");
         }

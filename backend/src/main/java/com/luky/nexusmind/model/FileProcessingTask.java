@@ -1,6 +1,5 @@
 package com.luky.nexusmind.model;
 
-import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
@@ -8,9 +7,9 @@ import lombok.NoArgsConstructor;
  * 文件处理任务类，用于Kafka消息传递
  */
 @Data
-@AllArgsConstructor
 @NoArgsConstructor
 public class FileProcessingTask {
+    private String attemptId; // 每次主动提交的版本；Kafka 自动重投保持不变
     private String fileMd5; // 文件的 MD5 校验值
     private String filePath; // 文件存储路径
     private String fileName; // 文件名

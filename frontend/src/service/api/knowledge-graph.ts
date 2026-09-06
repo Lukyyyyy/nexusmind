@@ -17,23 +17,24 @@ export function updateGraphCandidate(fileMd5: string, candidateId: number, data:
 export function publishDocumentGraph(fileMd5: string) {
   return request<Api.KnowledgeGraph.DocumentGraph>({
     url: `/knowledge-graph/documents/${encodeURIComponent(fileMd5)}/publish`,
-    method: 'post'
+    method: 'post',
+    timeout: 120_000
   });
 }
 
-export function setDocumentGraphEnabled(fileMd5: string, enabled: boolean, templateId?: number | null) {
+export function setDocumentGraphEnabled(fileMd5: string, enabled: boolean, templateId?: number | null, batchChars?: number) {
   return request<Api.KnowledgeGraph.DocumentGraph>({
     url: `/knowledge-graph/documents/${encodeURIComponent(fileMd5)}/enabled`,
     method: 'put',
-    data: { enabled, templateId }
+    data: { enabled, templateId, batchChars }
   });
 }
 
-export function rebuildDocumentGraph(fileMd5: string, templateId?: number | null) {
+export function rebuildDocumentGraph(fileMd5: string, templateId?: number | null, batchChars?: number) {
   return request<Api.KnowledgeGraph.DocumentGraph>({
     url: `/knowledge-graph/documents/${encodeURIComponent(fileMd5)}/rebuild`,
     method: 'post',
-    data: { templateId }
+    data: { templateId, batchChars }
   });
 }
 
@@ -50,5 +51,11 @@ export function fetchOrganizationGraph(
   return request<Api.KnowledgeGraph.OrganizationGraph>({
     url: `/knowledge-graph/organizations/${encodeURIComponent(scopeId)}`,
     params
+  });
+}
+
+export function retryDocumentGraph(fileMd5: string) {
+  return request<Api.KnowledgeGraph.DocumentGraph>({
+    url: `/knowledge-graph/documents/${encodeURIComponent(fileMd5)}/retry`, method: 'post'
   });
 }

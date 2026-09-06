@@ -338,6 +338,12 @@ public class ModelConfigService {
                 throw new CustomException("向量化最大并发数必须在 1 到 30 之间", HttpStatus.BAD_REQUEST);
             }
         }
+        if (request.modelType() == AiModelType.LLM) {
+            if (request.maxTokens() != null && (request.maxTokens() < 1))
+                throw new CustomException("maxTokens 必须为正整数", HttpStatus.BAD_REQUEST);
+            if (request.maxConcurrency() != null && (request.maxConcurrency() < 1 || request.maxConcurrency() > 30))
+                throw new CustomException("图谱并发数必须在 1 到 30 之间", HttpStatus.BAD_REQUEST);
+        }
         if (request.modelType() == AiModelType.RERANK) {
             if (request.topN() != null) {
                 if (request.topN() < STANDARD_FINAL_TOP_K) {

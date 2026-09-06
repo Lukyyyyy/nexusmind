@@ -45,7 +45,7 @@ public class ParseService {
     @Value("${file.parsing.min-chunk-size:256}")
     private int minChunkSize;
 
-    @Value("${file.parsing.max-chunk-size:4096}")
+    @Value("${file.parsing.max-chunk-size:1024}")
     private int maxChunkSize;
 
     @Value("${file.parsing.parent-chunk-size:1048576}")
@@ -107,7 +107,7 @@ public class ParseService {
                 .attribute("nexusmind.parse.chunk_size", effectiveChunkSize)
                 .attribute("nexusmind.parse.parent_chunk_size", parentChunkSize);
         try {
-        documentVectorRepository.deleteByFileMd5(fileMd5);
+        FileTaskControl.write(() -> documentVectorRepository.deleteByFileMd5(fileMd5));
         checkMemoryThreshold();
         try (BufferedInputStream bufferedStream = new BufferedInputStream(fileStream, bufferSize)) {
             // 创建一个流式处理器，它会在内部处理父块的切分和子块的保存
@@ -121,7 +121,7 @@ public class ParseService {
             parser.parse(bufferedStream, handler, metadata, context);
 
             span.attribute("nexusmind.parse.saved_chunks", handler.getSavedChunkCount());
-            processingStatusService.markActualParseEngine(fileMd5, userId, ParseEngine.TIKA);
+            FileTaskControl.write(() -> processingStatusService.markActualParseEngine(fileMd5, userId, ParseEngine.TIKA));
             logger.info("文件流式解析和入库完成，fileMd5: {}", fileMd5);
             return handler.getSavedChunkCount();
 
@@ -152,18 +152,19 @@ public class ParseService {
                 .attribute("nexusmind.parse.parent_chunk_size", parentChunkSize)
                 .attribute("nexusmind.parse.requested_engine", requestedEngine != null ? requestedEngine.name() : ParseEngine.AUTO.name());
         try {
-            documentVectorRepository.deleteByFileMd5(fileMd5);
+            FileTaskControl.write(() -> documentVectorRepository.deleteByFileMd5(fileMd5));
             checkMemoryThreshold();
 
-            String parsedMarkdown = minerUParseClient.parseToText(fileBytes, fileName);
+            String parsedMarkdown = minerUParseClient.parseDocument(fileBytes, fileName, fileMd5);
             int savedChunks = saveParsedMarkdown(fileMd5, parsedMarkdown, userId, orgTag, isPublic, effectiveChunkSize);
             span.attribute("nexusmind.parse.saved_chunks", savedChunks)
                     .attribute("nexusmind.parse.engine", ParseEngine.MINERU.name());
-            processingStatusService.markActualParseEngine(fileMd5, userId, ParseEngine.MINERU);
+            FileTaskControl.write(() -> processingStatusService.markActualParseEngine(fileMd5, userId, ParseEngine.MINERU));
             logger.info("MinerU解析和入库完成，fileMd5: {}, chunks: {}", fileMd5, savedChunks);
             return savedChunks;
         } catch (Exception e) {
             span.error(e);
+            if (FileTaskControl.isCancelled(e)) throw new FileTaskControl.Cancelled();
             if (shouldFallbackMinerUToTika(requestedEngine)) {
                 logger.warn("MinerU解析失败，AUTO策略将回退到Tika，fileMd5: {}, fileName: {}, reason: {}",
                         fileMd5, fileName, e.getMessage());
@@ -292,6 +293,7 @@ public class ParseService {
 
         @Override
         public void characters(char[] ch, int start, int length) {
+            FileTaskControl.check();
             buffer.append(ch, start, length);
             if (buffer.length() >= parentChunkSize) {
                 processParentChunk();
@@ -355,7 +357,7 @@ public class ParseService {
             vector.setPublic(isPublic);
             vectors.add(vector);
         }
-        documentVectorRepository.saveAll(vectors);
+        FileTaskControl.write(() -> documentVectorRepository.saveAll(vectors));
         
         // 原有逐个写入方式（已弃用，保留作为参考）：
         // for (String chunk : chunks) {
@@ -438,33 +440,7 @@ public class ParseService {
     }
 
     private List<String> splitMarkdownBlocks(String markdown) {
-        List<String> blocks = new ArrayList<>();
-        String[] lines = markdown.replace("\r\n", "\n").replace('\r', '\n').split("\n", -1);
-        StringBuilder block = new StringBuilder();
-        boolean inCodeFence = false;
-
-        for (String line : lines) {
-            if (line.trim().startsWith("```")) {
-                inCodeFence = !inCodeFence;
-                appendLine(block, line);
-                continue;
-            }
-
-            if (!inCodeFence && line.isBlank()) {
-                if (!block.isEmpty()) {
-                    blocks.add(block.toString());
-                    block = new StringBuilder();
-                }
-                continue;
-            }
-
-            appendLine(block, line);
-        }
-
-        if (!block.isEmpty()) {
-            blocks.add(block.toString());
-        }
-        return blocks;
+        return StructuredMarkdown.blocks(markdown);
     }
 
     private boolean isMarkdownHeading(String block) {
@@ -514,6 +490,12 @@ public class ParseService {
     }
 
     private List<String> splitLongMarkdownBlock(String block, String headingContext, int chunkSize) {
+        if (StructuredMarkdown.containsTable(block)) {
+            return StructuredMarkdown.splitTable(block, chunkSize);
+        }
+        if (StructuredMarkdown.containsFormula(block) || block.contains("```")) {
+            return List.of(block);
+        }
         if (isMarkdownTable(block)) {
             return splitMarkdownTable(block, headingContext, chunkSize);
         }

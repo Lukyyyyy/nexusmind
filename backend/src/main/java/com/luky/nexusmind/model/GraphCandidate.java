@@ -46,6 +46,8 @@ public class GraphCandidate {
 
     @Column(name = "evidence_chunk_id", nullable = false)
     private Integer evidenceChunkId;
+    private Integer evidenceStart;
+    private Integer evidenceEnd;
 
     @Column(name = "evidence_text", nullable = false, columnDefinition = "TEXT")
     private String evidenceText;

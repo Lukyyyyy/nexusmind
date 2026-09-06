@@ -2,7 +2,7 @@
 import type { DataTableColumns, PaginationProps } from 'naive-ui';
 import type { Directive } from 'vue';
 import { h } from 'vue';
-import { VueMarkdownIt } from 'vue-markdown-shiki';
+import DocumentMarkdown from '@/components/custom/document-markdown.vue';
 
 defineOptions({
   name: 'ChunkDialog'
@@ -190,7 +190,7 @@ function highlightElement(element: HTMLElement, searchTerm: string) {
   const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
     acceptNode: node => {
       const parent = node.parentElement;
-      if (!node.textContent || parent?.closest('script, style, mark[data-chunk-search-highlight]')) {
+      if (!node.textContent || parent?.closest('script, style, .katex, mark[data-chunk-search-highlight]')) {
         return NodeFilter.FILTER_REJECT;
       }
       return NodeFilter.FILTER_ACCEPT;
@@ -387,7 +387,7 @@ watch(visible, show => {
               v-highlight="searchedKeyword"
               class="markdown-body chunk-markdown p-12px text-13px leading-6"
             >
-              <VueMarkdownIt :content="selectedChunk.content || ''" />
+              <DocumentMarkdown :content="selectedChunk.content || ''" :file-md5="fileMd5" />
             </div>
             <pre
               v-else

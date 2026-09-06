@@ -59,6 +59,9 @@ public class DocumentService {
     private MinioClient minioClient;
 
     @Autowired
+    private ParsedAssetService parsedAssetService;
+
+    @Autowired
     private DocumentDownloadTicketService downloadTickets;
 
     @Value("${minio.bucketName:uploads}")
@@ -79,6 +82,12 @@ public class DocumentService {
     @Autowired
     private KnowledgeGraphService knowledgeGraphService;
 
+    @Autowired
+    private FileTaskControl taskControl;
+
+    @Autowired
+    private UploadService uploadService;
+
     @Value("${file.parsing.chunk-size}")
     private int configuredChunkSize;
 
@@ -96,57 +105,41 @@ public class DocumentService {
     @Transactional
     public void deleteDocument(String fileMd5, String userId) {
         logger.info("开始删除文档: {}", fileMd5);
+        if (taskControl != null) {
+            taskControl.beginDelete(fileMd5, userId);
+            taskControl.lockDeletion(fileMd5, userId);
+        }
         
         try {
-            // 获取文件信息以获取文件名
-            FileUpload fileUpload = fileUploadRepository.findByFileMd5AndUserId(fileMd5, userId)
-                    .orElseThrow(() -> new RuntimeException("文件不存在"));
+            // 与图谱任务共用数据库行锁；重复请求等待前一次事务完成后再检查记录。
+            Optional<FileUpload> existing = fileUploadRepository.lockByMd5AndOwner(fileMd5, userId);
+            if (existing.isEmpty()) {
+                if (uploadService != null) uploadService.deleteUploadChunks(fileMd5, userId);
+                if (taskControl != null) taskControl.finishDelete(fileMd5, userId);
+                return;
+            }
+            FileUpload fileUpload = existing.get();
 
-            // 先清除图谱关系和审核候选，避免留下无法追溯到原文的孤儿事实。
+            // 清理可重复执行。任一步失败都保留数据库记录，供用户重新执行删除。
+            parsedAssetService.delete(fileMd5);
             knowledgeGraphService.removeDocument(fileUpload);
-            
-            // 1. 删除Elasticsearch中的数据
-            try {
-                elasticsearchService.deleteByFileMd5(fileMd5);
-                logger.info("成功从Elasticsearch删除文档: {}", fileMd5);
-            } catch (Exception e) {
-                logger.error("从Elasticsearch删除文档时出错: {}", fileMd5, e);
-                // 继续删除其他数据
-            }
-            
-            // 2. 删除MinIO中的文件
-            try {
-                String objectName = "merged/" + fileUpload.getFileName();
-                minioClient.removeObject(
-                        RemoveObjectArgs.builder()
-                                .bucket(minioBucketName)
-                                .object(objectName)
-                                .build()
-                );
-                logger.info("成功从MinIO删除文件: {}", objectName);
-            } catch (Exception e) {
-                logger.error("从MinIO删除文件时出错: {}", fileMd5, e);
-                // 继续删除其他数据
-            }
-            
-            // 3. 删除DocumentVector记录
-            try {
-                documentVectorRepository.deleteByFileMd5(fileMd5);
-                logger.info("成功删除文档向量记录: {}", fileMd5);
-            } catch (Exception e) {
-                logger.error("删除文档向量记录时出错: {}", fileMd5, e);
-                // 继续删除其他数据
-            }
-            
-            // 4. 删除FileUpload记录
+            elasticsearchService.deleteByFileMd5(fileMd5);
+            minioClient.removeObject(RemoveObjectArgs.builder()
+                    .bucket(minioBucketName)
+                    .object("merged/" + fileUpload.getFileName())
+                    .build());
+
+            if (uploadService != null) uploadService.deleteUploadChunks(fileMd5, userId);
+            documentVectorRepository.deleteByFileMd5(fileMd5);
             processingStatusService.delete(fileMd5, userId);
-            fileUploadRepository.deleteByFileMd5(fileMd5);
-            logger.info("成功删除文件上传记录: {}", fileMd5);
-            
+            // 只删除已锁定且经过所有者校验的记录。
+            fileUploadRepository.delete(fileUpload);
+            fileUploadRepository.flush();
+            if (taskControl != null) taskControl.finishDelete(fileMd5, userId);
             logger.info("文档删除完成: {}", fileMd5);
         } catch (Exception e) {
             logger.error("删除文档过程中发生错误: {}", fileMd5, e);
-            throw new RuntimeException("删除文档失败: " + e.getMessage(), e);
+            throw new RuntimeException("删除未完成，请稍后重试", e);
         }
     }
     
@@ -337,6 +330,11 @@ public class DocumentService {
         data.put("totalChunks", totalChunks);
         data.put("processed", file.getStatus() == 1 && totalChunks > 0);
         return data;
+    }
+
+    public InputStream openParsedAsset(String fileMd5, String name, String userId, String orgTags) throws Exception {
+        getAccessibleFileOrThrow(fileMd5, userId, orgTags);
+        return parsedAssetService.open(fileMd5, name);
     }
 
     private FileUpload getAccessibleFileOrThrow(String fileMd5, String userId, String orgTags) {

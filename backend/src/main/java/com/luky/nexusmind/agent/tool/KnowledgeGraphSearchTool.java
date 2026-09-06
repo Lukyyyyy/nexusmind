@@ -30,6 +30,11 @@ public class KnowledgeGraphSearchTool implements AgentTool {
         ObjectNode properties = mapper.createObjectNode();
         properties.set("query", mapper.createObjectNode().put("type", "string")
                 .put("description", "需要查询的实体及关系"));
+        properties.set("maxHops", mapper.createObjectNode()
+                .put("type", "integer")
+                .put("minimum", 1)
+                .put("maximum", 4)
+                .put("description", "最大关系跳数，默认 3；复杂问题可设为 4"));
         ObjectNode schema = mapper.createObjectNode().put("type", "object");
         schema.set("properties", properties);
         schema.set("required", mapper.createArrayNode().add("query"));
@@ -42,15 +47,22 @@ public class KnowledgeGraphSearchTool implements AgentTool {
         String query = arguments.path("query").asText("").trim();
         if (query.isEmpty()) throw new IllegalArgumentException("query 不能为空");
         if (!graphStore.isEnabled()) return unavailable(callId);
+        int maxHops = Math.min(Math.max(arguments.path("maxHops").asInt(3), 1), 4);
         List<KnowledgeGraphStoreService.GraphPath> paths = graphStore.search(
                 query.substring(0, Math.min(query.length(), 500)),
-                context.scopeFileIds(), RESULT_LIMIT);
+                context.scopeFileIds(), RESULT_LIMIT, maxHops);
         ObjectNode output = mapper.createObjectNode();
         output.put("status", "success");
         output.put("query", query);
+        output.put("maxHops", maxHops);
         ArrayNode pathNodes = output.putArray("paths");
         for (KnowledgeGraphStoreService.GraphPath path : paths) {
             ObjectNode pathNode = pathNodes.addObject();
+            pathNode.put("score", path.score());
+            pathNode.put("hops", path.hops());
+            pathNode.put("crossDocument", path.crossDocument());
+            pathNode.put("inferred", path.inferred());
+            pathNode.put("terminalReason", path.terminalReason());
             pathNode.set("nodes", mapper.valueToTree(path.nodes()));
             ArrayNode relations = pathNode.putArray("relations");
             for (Map<String, Object> relation : path.relations()) {

@@ -54,6 +54,22 @@ class MinerUParseClientTest {
     }
 
     @Test
+    void parseDocumentRequestsImagesAndPersistsThem() throws Exception {
+        ParsedAssetService assets = org.mockito.Mockito.mock(ParsedAssetService.class);
+        ReflectionTestUtils.setField(client, "parsedAssetService", assets);
+        String md5 = "93b6bc30de63fcdcc246dbbe6f14d6d4";
+        org.mockito.Mockito.when(assets.persist(org.mockito.ArgumentMatchers.eq(md5),
+                org.mockito.ArgumentMatchers.eq("hello"), org.mockito.ArgumentMatchers.any()))
+                .thenReturn("stored markdown");
+        server.expect(requestTo("http://mineru.test/file_parse"))
+                .andExpect(content().string(containsString("name=\"return_images\"")))
+                .andRespond(withSuccess("{\"results\":{\"doc\":{\"md_content\":\"hello\",\"images\":{}}}}",
+                        MediaType.APPLICATION_JSON));
+        assertEquals("stored markdown", client.parseDocument("%PDF".getBytes(), "test.pdf", md5));
+        server.verify();
+    }
+
+    @Test
     void parseToTextIncludesMinerUErrorBody() {
         server.expect(requestTo("http://mineru.test/file_parse"))
                 .andRespond(withStatus(HttpStatus.BAD_GATEWAY)

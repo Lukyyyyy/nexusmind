@@ -114,25 +114,31 @@ public class EmbeddingClient {
                                             int dimension) throws Exception {
         int concurrency = Math.min(maxConcurrency, batches.size());
         ExecutorService executor = Executors.newFixedThreadPool(concurrency);
+        List<CompletableFuture<List<float[]>>> futures = new ArrayList<>(batches.size());
         try {
             logger.info("启用并发向量化，批次数: {}, 并发数: {}", batches.size(), concurrency);
-            List<CompletableFuture<List<float[]>>> futures = new ArrayList<>(batches.size());
             for (int i = 0; i < batches.size(); i++) {
                 final int batchIndex = i;
                 final List<String> batch = batches.get(i);
-                futures.add(CompletableFuture.supplyAsync(() -> callAndParseBatch(batchIndex, batch, modelConfig, dimension), executor));
+                futures.add(CompletableFuture.supplyAsync(com.luky.nexusmind.service.FileTaskControl.propagate(
+                        () -> callAndParseBatch(batchIndex, batch, modelConfig, dimension)), executor));
             }
 
             List<float[]> all = new ArrayList<>(expectedSize);
             for (CompletableFuture<List<float[]>> future : futures) {
-                all.addAll(future.join());
+                all.addAll(com.luky.nexusmind.service.FileTaskControl.await(future));
             }
             return all;
         } catch (Exception e) {
+            if (com.luky.nexusmind.service.FileTaskControl.isCancelled(e)) throw e;
+            com.luky.nexusmind.service.FileTaskControl.check();
+            futures.forEach(future -> future.cancel(true));
+            executor.shutdownNow();
             logger.warn("并发向量化失败，自动回退为串行请求: {}", e.getMessage());
             return embedSerially(batches, expectedSize, modelConfig, dimension);
         } finally {
-            executor.shutdown();
+            futures.forEach(future -> future.cancel(true));
+            executor.shutdownNow();
         }
     }
 
@@ -181,7 +187,8 @@ public class EmbeddingClient {
         requestBody.put("dimensions", dimension);
         requestBody.put("encoding_format", "float");  // 添加编码格式
 
-        return buildWebClient(modelConfig).post()
+        com.luky.nexusmind.service.FileTaskControl.check();
+        return com.luky.nexusmind.service.FileTaskControl.await(buildWebClient(modelConfig).post()
                 .uri("/embeddings")
                 .bodyValue(requestBody)
                 .retrieve()
@@ -189,7 +196,7 @@ public class EmbeddingClient {
                 .retryWhen(Retry.fixedDelay(3, Duration.ofSeconds(1))
                         .filter(e -> e instanceof WebClientResponseException responseException
                                 && responseException.getStatusCode().is5xxServerError()))
-                .block(Duration.ofSeconds(30));
+                .timeout(Duration.ofSeconds(30)).toFuture());
     }
 
     private WebClient buildWebClient(ModelConfigService.ResolvedModelConfig modelConfig) {

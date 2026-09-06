@@ -36,7 +36,7 @@ const emptyForm = (): Api.ModelConfig.Request => ({
   defaultModel: false,
   temperature: 0.3,
   topP: 0.9,
-  maxTokens: 2000,
+  maxTokens: 16,
   dimension: 2048,
   batchSize: 10,
   maxConcurrency: 10,
@@ -161,7 +161,7 @@ const columns: DataTableColumns<Api.ModelConfig.Item> = [
     minWidth: 190,
     render: row =>
       row.modelType === 'LLM'
-        ? `temp ${row.temperature ?? '-'} / top_p ${row.topP ?? '-'} / max ${row.maxTokens ?? '-'}`
+        ? `temp ${row.temperature ?? '-'} / top_p ${row.topP ?? '-'} / max ${row.maxTokens == null ? '-' : row.maxTokens / 1024 + 'k'}`
         : row.modelType === 'EMBEDDING'
           ? `维度 ${row.dimension ?? 2048} / batch ${row.batchSize ?? '-'} / 并发 ${row.maxConcurrency ?? '-'}`
           : `窗口 ${row.topN ?? '全局 30'}${row.fps != null ? ` / fps ${row.fps}` : ''}${
@@ -260,7 +260,7 @@ function openCreate(modelType: Api.ModelConfig.ModelType) {
     dimension: modelType === 'EMBEDDING' ? 2048 : null,
     temperature: modelType === 'LLM' ? 0.3 : null,
     topP: modelType === 'LLM' ? 0.9 : null,
-    maxTokens: modelType === 'LLM' ? 2000 : null
+    maxTokens: modelType === 'LLM' ? 16 : null
   };
   modalVisible.value = true;
 }
@@ -283,10 +283,10 @@ function openEdit(row: Api.ModelConfig.Item) {
     defaultModel: row.defaultModel,
     temperature: row.temperature,
     topP: row.topP,
-    maxTokens: row.maxTokens,
+    maxTokens: row.maxTokens == null ? 16 : row.maxTokens / 1024,
     dimension: row.dimension ?? 2048,
     batchSize: row.batchSize,
-    maxConcurrency: row.maxConcurrency,
+    maxConcurrency: row.maxConcurrency ?? 10,
     instruct: row.instruct,
     topN: row.topN,
     fps: row.fps
@@ -324,10 +324,10 @@ function normalizePayload(value: Api.ModelConfig.Request): Api.ModelConfig.Reque
     defaultModel: value.ownerType === 'SYSTEM' && value.defaultModel,
     dimension: value.modelType === 'EMBEDDING' ? 2048 : null,
     batchSize: value.modelType === 'EMBEDDING' ? value.batchSize : null,
-    maxConcurrency: value.modelType === 'EMBEDDING' ? value.maxConcurrency : null,
+    maxConcurrency: value.modelType === 'EMBEDDING' || value.modelType === 'LLM' ? value.maxConcurrency : null,
     temperature: value.modelType === 'LLM' ? value.temperature : null,
     topP: value.modelType === 'LLM' ? value.topP : null,
-    maxTokens: value.modelType === 'LLM' ? value.maxTokens : null,
+    maxTokens: value.modelType === 'LLM' && value.maxTokens != null ? value.maxTokens * 1024 : null,
     instruct: value.modelType === 'RERANK' ? value.instruct : null,
     topN: value.modelType === 'RERANK' ? value.topN : null,
     fps: value.modelType === 'RERANK' ? value.fps : null
@@ -519,22 +519,25 @@ onMounted(loadData);
             <NFormItem>
               <template #label>
                 <span class="inline-flex items-center gap-4px">
-                  Max Tokens
+                  Max Tokens（k）
                   <NTooltip>
                     <template #trigger>
                       <button
                         type="button"
                         class="inline-flex cursor-help border-0 bg-transparent p-0 text-#8a8f99"
-                        aria-label="Max Tokens：限制单次回答最多生成的 Token 数量，不等同于字符数。"
+                        aria-label="Max Tokens：限制推理及最终正文的总输出预算，1k = 1024 token，不等同于字符数。"
                       >
                         <SvgIcon icon="material-symbols:help-outline-rounded" class="text-16px" />
                       </button>
                     </template>
-                    <span class="block max-w-280px">限制单次回答最多生成的 Token 数量，不等同于字符数。值越大，回答可更长但耗时和费用可能增加。</span>
+                    <span class="block max-w-280px">限制推理及最终正文的总输出预算，1k = 1024 token，不等同于字符数。值越大，回答可更长但耗时和费用可能增加。</span>
                   </NTooltip>
                 </span>
               </template>
-              <NInputNumber v-model:value="formModel.maxTokens" :min="1" :step="100" class="w-full" />
+              <NInputNumber v-model:value="formModel.maxTokens" :min="1" :max="2097151" :precision="0" :step="1" class="w-full" />
+            </NFormItem>
+            <NFormItem label="图谱共享并发数">
+              <NInputNumber v-model:value="formModel.maxConcurrency" :min="1" :max="30" :precision="0" class="w-full" />
             </NFormItem>
           </template>
           <template v-else-if="formModel.modelType === 'EMBEDDING'">

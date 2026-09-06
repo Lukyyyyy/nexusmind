@@ -21,7 +21,14 @@ import java.util.Optional;
 @Service
 public class MinerUParseClient {
 
-    private final RestTemplate restTemplate = new RestTemplate();
+    @org.springframework.beans.factory.annotation.Autowired
+    private ParsedAssetService parsedAssetService;
+
+    private static final java.util.concurrent.ExecutorService REQUESTS = new java.util.concurrent.ThreadPoolExecutor(
+            0, 8, 60, java.util.concurrent.TimeUnit.SECONDS, new java.util.concurrent.SynchronousQueue<>(),
+            runnable -> { Thread thread = new Thread(runnable, "mineru-request"); thread.setDaemon(true); return thread; });
+    private final RestTemplate restTemplate = new RestTemplate(
+            new org.springframework.http.client.JdkClientHttpRequestFactory());
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Value("${file.parsing.mineru.base-url:}")
@@ -50,6 +57,14 @@ public class MinerUParseClient {
     }
 
     public String parseToText(byte[] fileBytes, String fileName) throws IOException {
+        return parse(fileBytes, fileName, null);
+    }
+
+    public String parseDocument(byte[] fileBytes, String fileName, String fileMd5) throws IOException {
+        return parse(fileBytes, fileName, fileMd5);
+    }
+
+    private String parse(byte[] fileBytes, String fileName, String fileMd5) throws IOException {
         if (!isEnabled()) {
             throw new IllegalStateException("MinerU parse service is not configured");
         }
@@ -65,15 +80,16 @@ public class MinerUParseClient {
         body.add("formula_enable", String.valueOf(enableFormula));
         body.add("table_enable", String.valueOf(enableTable));
         body.add("return_md", "true");
+        body.add("return_images", String.valueOf(fileMd5 != null));
         body.add("response_format_zip", "false");
 
         ResponseEntity<String> response;
         try {
-            response = restTemplate.postForEntity(
+            response = FileTaskControl.await(REQUESTS.submit(() -> restTemplate.postForEntity(
                     normalizeBaseUrl() + parsePath,
                     new HttpEntity<>(body, headers),
                     String.class
-            );
+            )));
         } catch (HttpStatusCodeException e) {
             throw new IOException("MinerU parse service returned " + e.getStatusCode() + formatErrorBody(e.getResponseBodyAsString()), e);
         }
@@ -82,7 +98,10 @@ public class MinerUParseClient {
             throw new IOException("MinerU parse service returned " + response.getStatusCode());
         }
 
-        return extractText(response.getBody());
+        JsonNode result = objectMapper.readTree(response.getBody());
+        String markdown = extractText(result);
+        return fileMd5 == null ? markdown
+                : parsedAssetService.persist(fileMd5, markdown, result);
     }
 
     private String resolveBackend() {
@@ -114,8 +133,7 @@ public class MinerUParseClient {
         return ": " + normalized;
     }
 
-    private String extractText(String responseBody) throws IOException {
-        JsonNode root = objectMapper.readTree(responseBody);
+    private String extractText(JsonNode root) throws IOException {
         return findTextContent(root)
                 .orElseThrow(() -> new IOException(
                         "MinerU parse response does not contain markdown/text content. topLevelFields=" + topLevelFields(root)

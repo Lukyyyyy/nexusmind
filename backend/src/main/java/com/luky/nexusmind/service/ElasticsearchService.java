@@ -14,6 +14,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
+import java.util.Objects;
+import java.util.HashMap;
+import com.luky.nexusmind.model.DocumentVector;
+import co.elastic.clients.elasticsearch.core.SearchRequest;
+import co.elastic.clients.elasticsearch._types.FieldValue;
+import co.elastic.clients.elasticsearch._types.Refresh;
 
 // Elasticsearch操作封装服务
 @Service
@@ -55,7 +61,7 @@ public class ElasticsearchService {
                     .toList();
 
             // 创建BulkRequest对象，并将批量操作列表添加到请求中
-            BulkRequest request = BulkRequest.of(b -> b.operations(bulkOperations));
+            BulkRequest request = BulkRequest.of(b -> b.operations(bulkOperations).refresh(Refresh.WaitFor));
             
             // 执行批量索引操作
             BulkResponse response = esClient.bulk(request);
@@ -70,7 +76,9 @@ public class ElasticsearchService {
                         logger.error("文档索引失败 - ID: {}, 错误: {}", item.id(), item.error().reason());
                     }
                 }
-                throw new RuntimeException("批量索引部分失败，请检查日志");
+                String reason = response.items().stream().filter(item -> item.error() != null)
+                        .map(item -> item.error().type() + ": " + item.error().reason()).findFirst().orElse("未知错误");
+                throw new RuntimeException("批量索引部分失败: " + reason);
             } else {
                 span.attribute("nexusmind.elasticsearch.status", "success");
                 logger.info("批量索引成功完成，文档数量: {}", documents.size());
@@ -96,11 +104,60 @@ public class ElasticsearchService {
             DeleteByQueryRequest request = DeleteByQueryRequest.of(d -> d
                     .index("knowledge_base")
                     .query(q -> q.term(t -> t.field("fileMd5").value(fileMd5)))
+                    .refresh(true)
             );
-            esClient.deleteByQuery(request);
+            var response = esClient.deleteByQuery(request);
+            if (response.timedOut() || !response.failures().isEmpty() || response.versionConflicts() > 0) {
+                throw new IllegalStateException("搜索索引尚未清理完成");
+            }
+        } catch (co.elastic.clients.elasticsearch._types.ElasticsearchException e) {
+            if (e.status() == 404 && "index_not_found_exception".equals(e.error().type())) return;
+            throw new RuntimeException("清理搜索索引失败", e);
         } catch (Exception e) {
             throw new RuntimeException("删除文档失败", e);
         }
+    }
+
+    /** 数量只是初筛；逐批核对切片身份、内容、模型及权限，避免旧索引被误认作成功。 */
+    public boolean hasCompleteIndex(String fileMd5, List<DocumentVector> chunks, String modelName) {
+        if (chunks.isEmpty()) return false;
+        try {
+            for (int start = 0; start < chunks.size(); start += 128) {
+                var batch = chunks.subList(start, Math.min(start + 128, chunks.size()));
+                var expected = new HashMap<Integer, DocumentVector>();
+                for (var chunk : batch) {
+                    if (expected.put(chunk.getChunkId(), chunk) != null) return false;
+                }
+                var ids = batch.stream().map(c -> FieldValue.of(c.getChunkId().longValue())).toList();
+                var request = SearchRequest.of(r -> r.index("knowledge_base").size(batch.size())
+                        .query(q -> q.bool(b -> b
+                                .filter(f -> f.term(t -> t.field("fileMd5").value(fileMd5)))
+                                .filter(f -> f.terms(t -> t.field("chunkId").terms(v -> v.value(ids)))))));
+                var response = esClient.search(request, EsDocument.class);
+                if (response.timedOut() || response.shards().failed().intValue() > 0
+                        || response.hits().hits().size() != batch.size()) return false;
+                for (var hit : response.hits().hits()) {
+                    EsDocument doc = hit.source();
+                    if (doc == null) return false;
+                    DocumentVector chunk = expected.remove(doc.getChunkId());
+                    if (chunk == null || !matchesChunk(doc, chunk, modelName)) return false;
+                }
+                if (!expected.isEmpty()) return false;
+            }
+            return true;
+        } catch (Exception e) {
+            throw new IllegalStateException("校验文件索引失败", e);
+        }
+    }
+
+    static boolean matchesChunk(EsDocument doc, DocumentVector chunk, String modelName) {
+        return Objects.equals(doc.getFileMd5(), chunk.getFileMd5())
+                && Objects.equals(doc.getTextContent(), chunk.getTextContent())
+                && Objects.equals(doc.getModelVersion(), modelName)
+                && Objects.equals(doc.getUserId(), chunk.getUserId())
+                && Objects.equals(doc.getOrgTag(), chunk.getOrgTag())
+                && doc.isPublic() == chunk.isPublic()
+                && doc.getVector() != null && doc.getVector().length > 0;
     }
 
     /**

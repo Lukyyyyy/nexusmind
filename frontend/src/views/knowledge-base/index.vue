@@ -19,6 +19,11 @@ const authStore = useAuthStore();
 const chatStore = useChatStore();
 const router = useRouter();
 
+// 删除状态
+const deletingFiles = ref(new Set<string>());
+const deleteDialogs = new Set<string>();
+const deletedDocumentIds = new Set<number>();
+
 // 文件预览相关状态
 const previewVisible = ref(false);
 const previewFileName = ref('');
@@ -96,7 +101,7 @@ function handleGraphView(row: Api.KnowledgeBase.UploadTask) {
 
 function getFileActionOptions(row: Api.KnowledgeBase.UploadTask): DropdownOption[] {
   return [
-    ...(row.processingState === 'SUCCEEDED' && row.id
+    ...(row.processingState === 'SUCCEEDED'
       ? [{ label: '就此文档提问', key: 'ask' }]
       : []),
     ...(row.processingState === 'FAILED'
@@ -119,8 +124,9 @@ function getFileActionOptions(row: Api.KnowledgeBase.UploadTask): DropdownOption
       disabled: row.status !== UploadStatus.Completed
     },
     {
-      label: '删除文件',
-      key: 'delete'
+      label: deletingFiles.value.has(row.fileMd5) ? '正在删除' : '删除文件',
+      key: 'delete',
+      disabled: deletingFiles.value.has(row.fileMd5)
     }
   ];
 }
@@ -151,8 +157,15 @@ function handleFileAction(key: string, row: Api.KnowledgeBase.UploadTask) {
 }
 
 async function handleAskDocument(row: Api.KnowledgeBase.UploadTask) {
-  if (!row.id) return;
-  const session = await chatStore.createSession({ type: 'DOCUMENTS', documentIds: [row.id] });
+  if (row.processingState !== 'SUCCEEDED') return;
+  // 本地上传任务可能尚未取得数据库 ID；入口随完成状态立即显示，点击时补齐 ID。
+  if (!row.id) await getList();
+  const documentId = row.id ?? tasks.value.find(task => task.fileMd5 === row.fileMd5)?.id;
+  if (!documentId) {
+    window.$message?.error('暂时无法获取文档信息，请刷新后重试');
+    return;
+  }
+  const session = await chatStore.createSession({ type: 'DOCUMENTS', documentIds: [documentId] });
   if (!session) return;
   await router.push({ name: 'chat' });
   window.$message?.success(`已限定为“${row.fileName}”`);
@@ -171,16 +184,37 @@ function graphActionLabel(row: Api.KnowledgeBase.UploadTask) {
 }
 
 function confirmDelete(row: Api.KnowledgeBase.UploadTask) {
-  window.$dialog?.warning({
+  const { fileMd5 } = row;
+  if (deletingFiles.value.has(fileMd5) || deleteDialogs.has(fileMd5)) return;
+  const dialog = window.$dialog?.warning({
     title: '删除文件',
     content: `确认删除“${row.fileName}”吗？`,
     positiveText: '删除',
     negativeText: '取消',
-    positiveButtonProps: {
-      type: 'error'
+    positiveButtonProps: { type: 'error' },
+    onPositiveClick: async () => {
+      if (deletingFiles.value.has(fileMd5)) return false;
+      if (!dialog) return false;
+      dialog.loading = true;
+      dialog.positiveText = '正在删除';
+      dialog.closable = false;
+      dialog.maskClosable = false;
+      dialog.closeOnEsc = false;
+      dialog.negativeButtonProps = { disabled: true };
+      try {
+        return await handleDelete(fileMd5);
+      } finally {
+        dialog.loading = false;
+        dialog.positiveText = '删除';
+        dialog.closable = true;
+        dialog.maskClosable = true;
+        dialog.closeOnEsc = true;
+        dialog.negativeButtonProps = { disabled: false };
+      }
     },
-    onPositiveClick: () => handleDelete(row.fileMd5)
+    onAfterLeave: () => deleteDialogs.delete(fileMd5)
   });
+  if (dialog) deleteDialogs.add(fileMd5);
 }
 
 const {
@@ -280,8 +314,13 @@ const {
             options={getFileActionOptions(row)}
             onSelect={key => handleFileAction(String(key), row)}
           >
-            <NButton size="small" quaternary>
-              更多
+            <NButton
+              size="small"
+              quaternary
+              loading={deletingFiles.value.has(row.fileMd5)}
+              disabled={deletingFiles.value.has(row.fileMd5)}
+            >
+              {deletingFiles.value.has(row.fileMd5) ? '正在删除' : '更多'}
             </NButton>
           </NDropdown>
         </div>
@@ -414,6 +453,8 @@ async function getList(pageNum?: number) {
   else await getData();
 
   const previousTasks = [...tasks.value];
+  // 忽略删除前发起、删除后才返回的列表响应；重新上传会获得新的记录 ID。
+  data.value = data.value.filter(item => !item.id || !deletedDocumentIds.has(item.id));
   const nextTasks = data.value.map(item => {
     const previousTask = previousTasks.find(task => task.fileMd5 === item.fileMd5);
 
@@ -545,26 +586,29 @@ function renderOwnership(row: Api.KnowledgeBase.UploadTask) {
   );
 }
 
-async function handleDelete(fileMd5: string) {
-  const index = tasks.value.findIndex(task => task.fileMd5 === fileMd5);
+async function handleDelete(fileMd5: string): Promise<boolean> {
+  if (deletingFiles.value.has(fileMd5)) return false;
+  deletingFiles.value.add(fileMd5);
+  try {
+    const task = tasks.value.find(item => item.fileMd5 === fileMd5);
+    store.cancelUpload(fileMd5);
 
-  if (index !== -1) {
-    tasks.value[index].requestIds?.forEach(requestId => {
-      request.cancelRequest(requestId);
+    // 即使没有上传成功的分片，服务端也可能已经创建记录，统一执行幂等删除。
+    const { error } = await request({
+      url: `/documents/${encodeURIComponent(fileMd5)}`,
+      method: 'DELETE',
+      timeout: 120_000
     });
-  }
+    if (error) return false;
 
-  // 如果文件一个分片也没有上传完成，则直接删除
-  if (tasks.value[index].uploadedChunks && tasks.value[index].uploadedChunks.length === 0) {
-    tasks.value.splice(index, 1);
-    return;
-  }
-
-  const { error } = await request({ url: `/documents/${fileMd5}`, method: 'DELETE' });
-  if (!error) {
-    tasks.value.splice(index, 1);
+    // 请求期间列表可能刷新或重排，不能复用请求前的数组下标。
+    if (task?.id) deletedDocumentIds.add(task.id);
+    tasks.value = tasks.value.filter(item => item.fileMd5 !== fileMd5);
+    data.value = data.value.filter(item => item.fileMd5 !== fileMd5);
     window.$message?.success('删除成功');
-    await getData();
+    return true;
+  } finally {
+    deletingFiles.value.delete(fileMd5);
   }
 }
 

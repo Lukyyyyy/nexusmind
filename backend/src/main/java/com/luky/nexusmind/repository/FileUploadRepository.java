@@ -12,6 +12,20 @@ import java.util.Set;
 
 @Repository
 public interface FileUploadRepository extends JpaRepository<FileUpload, Long> {
+    List<FileUpload> findByGraphStatusInAndGraphRunTokenIsNotNull(List<com.luky.nexusmind.model.KnowledgeGraphStatus> statuses);
+
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select f from FileUpload f where f.fileMd5 = :md5")
+    Optional<FileUpload> lockByMd5(@Param("md5") String md5);
+
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select f from FileUpload f where f.fileMd5 = :md5 and f.userId = :owner")
+    Optional<FileUpload> lockByMd5AndOwner(@Param("md5") String md5, @Param("owner") String owner);
+
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select f from FileUpload f where f.id = :id")
+    Optional<FileUpload> lockById(@Param("id") Long id);
+
     Optional<FileUpload> findByFileMd5(String fileMd5);
     
     Optional<FileUpload> findByFileMd5AndUserId(String fileMd5, String userId);

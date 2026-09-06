@@ -365,6 +365,7 @@ declare namespace Api {
       chunkSize: number;
       graphEnabled: boolean;
       graphPromptTemplateId: number | null;
+      graphBatchChars: number;
       fileList: import('naive-ui').UploadFileInfo[];
     }
 
@@ -387,6 +388,7 @@ declare namespace Api {
       actualChunkSize?: number | null;
       graphEnabled?: boolean;
       graphPromptTemplateId?: number | null;
+      graphBatchChars?: number;
       graphStatus?: 'DISABLED' | 'QUEUED' | 'EXTRACTING' | 'PENDING_REVIEW' | 'PUBLISHED' | 'FAILED';
       graphError?: string | null;
       processingStage?: 'QUEUED' | 'PARSING' | 'CHUNKING' | 'VECTORIZING' | 'INDEXING' | 'COMPLETED' | 'FAILED';
@@ -408,6 +410,7 @@ declare namespace Api {
       status: UploadStatus;
       createdAt?: string;
       mergedAt?: string;
+      uploadGeneration?: number; // 上传代次，拒绝删除前的迟到请求
       requestIds?: string[]; // 请求ID，用于取消上传
     }
     type List = Common.PaginatingQueryRecord<UploadTask>;
@@ -516,6 +519,16 @@ declare namespace Api {
       nodes: GraphNode[];
       edges: GraphEdge[];
       neo4jEnabled: boolean;
+      batchChars: number;
+      chunkSize: number;
+      progress?: {
+        stage: string;
+        dictionary: { total: number; ended: number; succeeded: number; failed: number; retrying: number };
+        relations: { total: number; ended: number; succeeded: number; failed: number; retrying: number };
+        unresolved: number;
+        canRetry: boolean;
+        failures: { stage: string; batch: number; ranges: string[]; reason: string }[];
+      } | null;
     }
 
     interface GraphNode {
@@ -535,6 +548,9 @@ declare namespace Api {
       evidenceText: string;
       status: CandidateStatus;
       disputed?: boolean;
+      relationKind?: 'ASSERTED' | 'DOCUMENT_PROVENANCE' | 'INFERRED';
+      crossDocument?: boolean;
+      documentCount?: number;
     }
 
     interface CandidateUpdate {
@@ -574,6 +590,16 @@ declare namespace Api {
       stats: OrganizationGraphStats;
       truncated: boolean;
       neo4jEnabled: boolean;
+      batchChars: number;
+      chunkSize: number;
+      progress?: {
+        stage: string;
+        dictionary: { total: number; ended: number; succeeded: number; failed: number; retrying: number };
+        relations: { total: number; ended: number; succeeded: number; failed: number; retrying: number };
+        unresolved: number;
+        canRetry: boolean;
+        failures: { stage: string; batch: number; ranges: string[]; reason: string }[];
+      } | null;
     }
 
     interface OrganizationGraphEdge {
@@ -590,6 +616,8 @@ declare namespace Api {
       supportCount: number;
       documentCount: number;
       disputed: boolean;
+      relationKind: 'ASSERTED';
+      crossDocument: boolean;
       evidences: OrganizationGraphEvidence[];
     }
 
@@ -614,6 +642,7 @@ declare namespace Api {
       relationCount: number;
       documentCount: number;
       disputedRelationCount: number;
+      crossDocumentRelationCount: number;
     }
   }
 

@@ -82,8 +82,20 @@ public class UploadController {
     @Value("${file.parsing.min-chunk-size:256}")
     private int minTextChunkSize;
 
-    @Value("${file.parsing.max-chunk-size:4096}")
+    @Value("${file.parsing.max-chunk-size:1024}")
     private int maxTextChunkSize;
+
+    @Autowired
+    private com.luky.nexusmind.service.FileTaskControl taskControl;
+
+    @GetMapping("/generation")
+    public ResponseEntity<?> uploadGeneration(@RequestParam String fileMd5, @RequestAttribute("userId") String userId) {
+        try {
+            return ResponseEntity.ok(Map.of("code", 200, "data", Map.of("generation", taskControl.uploadGeneration(fileMd5, userId))));
+        } catch (com.luky.nexusmind.service.FileTaskControl.Cancelled e) {
+            return errorResponse(HttpStatus.CONFLICT, e.getMessage());
+        }
+    }
 
     public UploadController(UploadService uploadService, KafkaTemplate<String, Object> kafkaTemplate) {
         this.uploadService = uploadService;
@@ -191,6 +203,10 @@ public class UploadController {
             
             return ResponseEntity.ok(response);
         } catch (Exception e) {
+            if (com.luky.nexusmind.service.FileTaskControl.isCancelled(e)) {
+                monitor.end("上传已取消");
+                return errorResponse(HttpStatus.CONFLICT, "文件上传已取消");
+            }
             LogUtils.logBusinessError("UPLOAD_CHUNK", userId, "分片上传失败: fileMd5=%s, fileName=%s, fileType=%s, chunkIndex=%d", e, fileMd5, fileName, fileType, chunkIndex);
             monitor.end("分片上传失败: " + e.getMessage());
             Map<String, Object> errorResponse = new HashMap<>();
@@ -338,23 +354,9 @@ public class UploadController {
 
         FileProcessingStatus failedStatus = statusOptional.get();
         ProcessingStage failedStage = failedStatus.getCurrentStage();
-        long existingChunkCount = documentVectorRepository.countDistinctChunksByFileMd5(fileMd5);
-        boolean canReuseParsedChunks = existingChunkCount > 0
-                && (failedStage == ProcessingStage.VECTORIZING
-                || failedStage == ProcessingStage.INDEXING
-                || failedStage == ProcessingStage.COMPLETED);
-        String objectUrl = null;
-        if (!canReuseParsedChunks) {
-            try {
-                objectUrl = uploadService.getMergedFileUrl(fileUpload.getFileName());
-            } catch (RuntimeException e) {
-                return errorResponse(HttpStatus.CONFLICT, "原始文件不可用，请删除后重新上传");
-            }
-        }
-
         FileProcessingTask task = new FileProcessingTask(
                 fileMd5,
-                objectUrl,
+                null,
                 fileUpload.getFileName(),
                 fileUpload.getUserId(),
                 fileUpload.getOrgTag(),
@@ -373,7 +375,7 @@ public class UploadController {
         task.setTraceparent(traceSpan.traceparent());
         try {
             kafkaTemplate.executeInTransaction(kt -> {
-                kt.send(kafkaConfig.getFileProcessingTopic(), task);
+                kt.send(kafkaConfig.getFileProcessingTopic(), task.getFileMd5(), task);
                 return true;
             });
             traceSpan.attribute("nexusmind.file.retry.from_stage",
@@ -404,12 +406,23 @@ public class UploadController {
      * @param userId 当前用户ID
      * @return 返回包含合并后文件访问URL的响应
      */
-    @Transactional
     @PostMapping("/merge")
     public ResponseEntity<Map<String, Object>> mergeFile(
             @RequestBody MergeRequest request,
             @RequestAttribute("userId") String userId) {
         
+        try (var scope = taskControl.open(request.fileMd5(), userId, request.uploadGeneration(), null)) {
+            return com.luky.nexusmind.service.FileTaskControl.write(() -> mergeActiveFile(request, userId));
+        } catch (com.luky.nexusmind.service.FileTaskControl.Cancelled e) {
+            return errorResponse(HttpStatus.CONFLICT, e.getMessage());
+        } catch (com.luky.nexusmind.exception.CustomException e) {
+            return errorResponse(e.getStatus(), e.getMessage());
+        } catch (RuntimeException e) {
+            return errorResponse(HttpStatus.INTERNAL_SERVER_ERROR, "文件合并失败");
+        }
+    }
+
+    private ResponseEntity<Map<String, Object>> mergeActiveFile(MergeRequest request, String userId) {
         LogUtils.PerformanceMonitor monitor = LogUtils.startPerformanceMonitor("MERGE_FILE");
         String fileType = getFileType(request.fileName());
         ParseEngine parseEngine = ParseEngine.fromNullable(request.parseEngine());
@@ -441,6 +454,11 @@ public class UploadController {
                             LogUtils.logUserOperation(userId, "MERGE_FILE", request.fileMd5(), "FAILED_FILE_NOT_FOUND");
                             return new RuntimeException("文件记录不存在");
                         });
+                fileUpload.setTextChunkSize(textChunkSize);
+                if (fileUpload.isGraphEnabled()) {
+                    com.luky.nexusmind.service.GraphExtractionEngine.validateBatch(fileUpload, request.graphBatchChars());
+                }
+                fileUploadRepository.save(fileUpload);
                 permissionSpan.attribute("nexusmind.file.upload_status", fileUpload.getStatus())
                         .attribute("nexusmind.org_tag", fileUpload.getOrgTag())
                         .attribute("nexusmind.upload.is_public", fileUpload.isPublic());
@@ -507,7 +525,7 @@ public class UploadController {
             
             FileProcessingTask task = new FileProcessingTask(
                     request.fileMd5(),
-                    objectUrl,
+                    null,
                     request.fileName(),
                     fileUpload.getUserId(),
                     fileUpload.getOrgTag(),
@@ -525,7 +543,7 @@ public class UploadController {
                     .attribute("messaging.destination.name", kafkaConfig.getFileProcessingTopic());
             try {
                 kafkaTemplate.executeInTransaction(kt -> {
-                    kt.send(kafkaConfig.getFileProcessingTopic(), task);
+                    kt.send(kafkaConfig.getFileProcessingTopic(), task.getFileMd5(), task);
                     return true;
                 });
             } catch (RuntimeException e) {
@@ -552,6 +570,8 @@ public class UploadController {
             LogUtils.logUserOperation(userId, "MERGE_FILE", request.fileMd5(), "SUCCESS");
             monitor.end("文件合并成功");
             return ResponseEntity.ok(response);
+        } catch (com.luky.nexusmind.exception.CustomException e) {
+            throw e; // 由任务写入事务统一回滚
         } catch (Exception e) {
             traceSpan.error(e);
             traceSpan.attribute("nexusmind.merge.status", "failed");
@@ -561,7 +581,7 @@ public class UploadController {
             Map<String, Object> errorResponse = new HashMap<>();
             errorResponse.put("code", HttpStatus.INTERNAL_SERVER_ERROR.value());
             errorResponse.put("message", "文件合并失败: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse);
+            throw new RuntimeException("文件合并失败", e);
         } finally {
             traceSpan.end();
             traceSpan.close();
@@ -594,7 +614,10 @@ public class UploadController {
     /**
      * 合并请求的辅助类，包含文件的MD5值和文件名
      */
-    public record MergeRequest(String fileMd5, String fileName, String parseEngine, Integer chunkSize) {}
+    public record MergeRequest(String fileMd5, String fileName, String parseEngine, Integer chunkSize, Integer graphBatchChars, Long uploadGeneration) {
+        public MergeRequest(String fileMd5,String fileName,String parseEngine,Integer chunkSize,Integer graphBatchChars) { this(fileMd5,fileName,parseEngine,chunkSize,graphBatchChars,null); }
+        public MergeRequest(String fileMd5,String fileName,String parseEngine,Integer chunkSize) { this(fileMd5,fileName,parseEngine,chunkSize,null); }
+    }
 
     private int resolveTextChunkSize(Integer requestedChunkSize) {
         if (requestedChunkSize == null) {

@@ -67,7 +67,7 @@ public class KnowledgeGraphController {
                                      @RequestAttribute("userId") String userId,
                                      @RequestAttribute("role") String role,
                                      @RequestBody KnowledgeGraphService.EnabledRequest request) {
-        return ok(graphService.setEnabled(fileMd5, userId, role, request.enabled(), request.templateId()));
+        return ok(graphService.setEnabled(fileMd5, userId, role, request.enabled(), request.templateId(), request.batchChars()));
     }
 
     @PostMapping("/documents/{fileMd5}/rebuild")
@@ -75,7 +75,13 @@ public class KnowledgeGraphController {
                                      @RequestAttribute("userId") String userId,
                                      @RequestAttribute("role") String role,
                                      @RequestBody(required = false) KnowledgeGraphService.RebuildRequest request) {
-        return ok(graphService.rebuild(fileMd5, userId, role, request == null ? null : request.templateId()));
+        return ok(graphService.rebuild(fileMd5, userId, role, request == null ? null : request.templateId(), request == null ? null : request.batchChars()));
+    }
+
+    @PostMapping("/documents/{fileMd5}/retry")
+    public ResponseEntity<?> retry(@PathVariable String fileMd5,
+            @RequestAttribute("userId") String userId, @RequestAttribute("role") String role) {
+        return ok(graphService.retry(fileMd5,userId,role));
     }
 
     private ResponseEntity<?> ok(Object data) {

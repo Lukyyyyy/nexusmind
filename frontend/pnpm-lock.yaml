@@ -50,6 +50,9 @@ importers:
       defu:
         specifier: 6.1.4
         version: 6.1.4
+      dompurify:
+        specifier: ^3.4.14
+        version: 3.4.14
       echarts:
         specifier: 5.6.0
         version: 5.6.0
@@ -62,6 +65,9 @@ importers:
       json5:
         specifier: 2.2.3
         version: 2.2.3
+      katex:
+        specifier: ^0.16.22
+        version: 0.16.22
       markdown-it:
         specifier: ^14.1.0
         version: 14.2.0
@@ -352,6 +358,13 @@ importers:
         version: 4.2.2
 
 packages:
+
+  '@types/trusted-types@2.0.7':
+    resolution: {integrity: sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==}
+
+  dompurify@3.4.14:
+    resolution: {integrity: sha512-dVoH9z+MY+C9IilgGCk3YfFqjLi3fChm2OiKJMzh6axrJ5qwxqWaZamgmHrpv22CN/KdbZJuGEGgfQoL00LTdg==}
+
 
   '@alova/mock@2.0.14':
     resolution: {integrity: sha512-QMPrtI2CORJghpIgzVrQLOBmth+h7s6xJY12TFWHPjw7Ag1BESbcGyAKJrfoD6xUP5E58f9WFmhgQTrv0jMs0A==}
@@ -4877,6 +4890,14 @@ packages:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
 
 snapshots:
+
+  '@types/trusted-types@2.0.7':
+    optional: true
+
+  dompurify@3.4.14:
+    optionalDependencies:
+      '@types/trusted-types': 2.0.7
+
 
   '@alova/mock@2.0.14(alova@3.2.10)':
     dependencies:

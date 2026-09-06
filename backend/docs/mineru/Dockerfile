@@ -16,6 +16,9 @@ RUN python3 -m pip install --no-cache-dir --index-url https://download.pytorch.o
 RUN python3 -m pip install --no-cache-dir -U 'mineru[pipeline]==3.4.5'
 RUN python3 -m pip install --no-cache-dir 'six==1.17.0'
 
+COPY cancellable_api.py /app/cancellable_api.py
+WORKDIR /app
+
 COPY entrypoint.sh /usr/local/bin/mineru-entrypoint.sh
 RUN chmod +x /usr/local/bin/mineru-entrypoint.sh
 

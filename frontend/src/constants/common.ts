@@ -16,7 +16,7 @@ export const chunkSize = 5 * 1024 * 1024;
 
 export const textChunkSizeMin = 256;
 
-export const textChunkSizeMax = 4096;
+export const textChunkSizeMax = 1024;
 
 export const defaultTextChunkSize = 512;
 

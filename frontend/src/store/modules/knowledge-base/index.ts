@@ -7,8 +7,18 @@ export const useKnowledgeBaseStore = defineStore(SetupStoreId.KnowledgeBase, () 
   const authStore = useAuthStore();
   const tasks = ref<Api.KnowledgeBase.UploadTask[]>([]);
   const activeUploads = ref<Set<string>>(new Set());
+  const cancelledTasks = new WeakSet<Api.KnowledgeBase.UploadTask>();
+
+  function cancelUpload(fileMd5: string) {
+    const task = tasks.value.find(item => item.fileMd5 === fileMd5);
+    if (!task) return;
+    cancelledTasks.add(task);
+    if (task.status !== UploadStatus.Completed) task.status = UploadStatus.Break;
+    task.requestIds?.forEach(requestId => request.cancelRequest(requestId));
+  }
 
   async function uploadChunk(task: Api.KnowledgeBase.UploadTask, chunkIndex: number): Promise<boolean> {
+    if (cancelledTasks.has(task)) return false;
     const totalChunks = Math.ceil(task.totalSize / chunkSize);
 
     const chunkStart = chunkIndex * chunkSize;
@@ -24,6 +34,7 @@ export const useKnowledgeBaseStore = defineStore(SetupStoreId.KnowledgeBase, () 
       data: {
         file: chunk,
         fileMd5: task.fileMd5,
+        uploadGeneration: task.uploadGeneration,
         chunkIndex,
         totalSize: task.totalSize,
         fileName: task.fileName,
@@ -41,10 +52,11 @@ export const useKnowledgeBaseStore = defineStore(SetupStoreId.KnowledgeBase, () 
 
     task.requestIds = task.requestIds.filter(id => id !== requestId);
 
-    if (error) return false;
+    if (error || cancelledTasks.has(task)) return false;
 
     // 更新任务状态
-    const updatedTask = tasks.value.find(t => t.fileMd5 === task.fileMd5)!;
+    const updatedTask = tasks.value.find(t => t.fileMd5 === task.fileMd5);
+    if (!updatedTask) return false;
     const uploadedChunkSet = new Set([...updatedTask.uploadedChunks, ...data.uploaded]);
     updatedTask.uploadedChunks = [...uploadedChunkSet].sort((a, b) => a - b);
     updatedTask.progress = Number.parseFloat(((updatedTask.uploadedChunks.length / totalChunks) * 100).toFixed(2));
@@ -53,16 +65,22 @@ export const useKnowledgeBaseStore = defineStore(SetupStoreId.KnowledgeBase, () 
   }
 
   async function mergeFile(task: Api.KnowledgeBase.UploadTask) {
+    if (cancelledTasks.has(task)) return false;
+    const requestId = nanoid();
+    task.requestIds ??= [];
+    task.requestIds.push(requestId);
     try {
       const { error } = await request({
         url: '/upload/merge',
+        headers: { [REQUEST_ID_KEY]: requestId },
         method: 'POST',
-        data: { fileMd5: task.fileMd5, fileName: task.fileName, parseEngine: task.parseEngine, chunkSize: task.chunkSize }
+        data: { fileMd5: task.fileMd5, fileName: task.fileName, parseEngine: task.parseEngine, chunkSize: task.chunkSize, graphBatchChars: task.graphBatchChars, uploadGeneration: task.uploadGeneration }
       });
-      if (error) return false;
+      if (error || cancelledTasks.has(task)) return false;
 
       // 更新任务状态为已完成
       const index = tasks.value.findIndex(t => t.fileMd5 === task.fileMd5);
+      if (index === -1) return false;
       tasks.value[index].status = UploadStatus.Completed;
       tasks.value[index].processingStage = 'QUEUED';
       tasks.value[index].processingState = 'PENDING';
@@ -70,6 +88,8 @@ export const useKnowledgeBaseStore = defineStore(SetupStoreId.KnowledgeBase, () 
       return true;
     } catch {
       return false;
+    } finally {
+      task.requestIds = task.requestIds?.filter(id => id !== requestId);
     }
   }
 
@@ -104,12 +124,18 @@ export const useKnowledgeBaseStore = defineStore(SetupStoreId.KnowledgeBase, () 
       }
     }
 
+    const { data: generationData, error: generationError } = await request<{ generation: number }>({
+      url: '/upload/generation', params: { fileMd5: md5 }
+    });
+    if (generationError) return;
+
     // 创建新的上传任务对象
     const newTask: Api.KnowledgeBase.UploadTask = {
       file,
       chunk: null,
       chunkIndex: 0,
       fileMd5: md5,
+      uploadGeneration: generationData.generation,
       fileName: file.name,
       totalSize: file.size,
       userId: authStore.userInfo.id ? String(authStore.userInfo.id) : undefined,
@@ -120,6 +146,7 @@ export const useKnowledgeBaseStore = defineStore(SetupStoreId.KnowledgeBase, () 
       chunkSize: form.chunkSize,
       graphEnabled: form.graphEnabled,
       graphPromptTemplateId: form.graphPromptTemplateId,
+      graphBatchChars: form.graphBatchChars,
       uploadedChunks: [],
       progress: 0,
       status: UploadStatus.Pending,
@@ -149,6 +176,7 @@ export const useKnowledgeBaseStore = defineStore(SetupStoreId.KnowledgeBase, () 
 
     // 获取第一个待上传的文件
     const task = pendingTasks[0];
+    cancelledTasks.delete(task);
     task.status = UploadStatus.Uploading;
     activeUploads.value.add(task.fileMd5);
 
@@ -156,6 +184,13 @@ export const useKnowledgeBaseStore = defineStore(SetupStoreId.KnowledgeBase, () 
     const totalChunks = Math.ceil(task.totalSize / chunkSize);
 
     try {
+      if (task.uploadGeneration === undefined) {
+        const { data, error } = await request<{ generation: number }>({
+          url: '/upload/generation', params: { fileMd5: task.fileMd5 }
+        });
+        if (error || cancelledTasks.has(task)) return;
+        task.uploadGeneration = data.generation;
+      }
       if (task.uploadedChunks.length === totalChunks) {
         const success = await mergeFile(task);
         if (!success) throw new Error('文件合并失败');
@@ -182,10 +217,11 @@ export const useKnowledgeBaseStore = defineStore(SetupStoreId.KnowledgeBase, () 
         throw new Error('分片上传未完成');
       }
     } catch (e) {
-      console.error('%c [ 👉 upload error 👈 ]-168', 'font-size:16px; background:#94cc97; color:#d8ffdb;', e);
+      if (cancelledTasks.has(task)) return;
+      console.error('文件上传失败', e);
       // 如果上传失败，则将任务状态设置为中断
       const index = tasks.value.findIndex(t => t.fileMd5 === task.fileMd5);
-      tasks.value[index].status = UploadStatus.Break;
+      if (index !== -1) tasks.value[index].status = UploadStatus.Break;
     } finally {
       // 无论成功或失败，都从活跃队列中移除
       activeUploads.value.delete(task.fileMd5);
@@ -216,6 +252,7 @@ export const useKnowledgeBaseStore = defineStore(SetupStoreId.KnowledgeBase, () 
   return {
     tasks,
     activeUploads,
+    cancelUpload,
     enqueueUpload,
     startUpload
   };

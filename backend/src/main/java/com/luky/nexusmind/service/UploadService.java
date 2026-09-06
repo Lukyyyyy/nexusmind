@@ -28,6 +28,9 @@ import java.util.stream.Collectors;
 @Service
 public class UploadService {
 
+    @Autowired
+    private FileTaskControl taskControl;
+
     private static final Logger logger = LoggerFactory.getLogger(UploadService.class);
 
     // 用于缓存已上传分片的信息
@@ -80,6 +83,24 @@ public class UploadService {
                            MultipartFile file, String orgTag, boolean isPublic, Boolean graphEnabled,
                            Long graphPromptTemplateId,
                            String userId) throws IOException {
+        Long generation = null;
+        var attributes = org.springframework.web.context.request.RequestContextHolder.getRequestAttributes();
+        if (attributes instanceof org.springframework.web.context.request.ServletRequestAttributes servlet) {
+            String value = servlet.getRequest().getParameter("uploadGeneration");
+            if (value != null) generation = Long.valueOf(value);
+        }
+        try (var scope = taskControl.open(fileMd5, userId, generation, null)) {
+            FileTaskControl.write(() -> {
+                try { uploadActiveChunk(fileMd5, chunkIndex, totalSize, fileName, file, orgTag, isPublic,
+                        graphEnabled, graphPromptTemplateId, userId); }
+                catch (IOException e) { throw new java.io.UncheckedIOException(e); }
+            });
+        }
+    }
+
+    private void uploadActiveChunk(String fileMd5, int chunkIndex, long totalSize, String fileName,
+                           MultipartFile file, String orgTag, boolean isPublic, Boolean graphEnabled,
+                           Long graphPromptTemplateId, String userId) throws IOException {
         boolean effectivePublic = DocumentPermissionPolicy.resolveUploadVisibility(orgTag, isPublic);
         boolean effectiveGraphEnabled = graphEnabled != null
                 ? graphEnabled
@@ -150,7 +171,7 @@ public class UploadService {
                     logger.info("分片已上传但数据库无记录，需要补充分片信息 => fileMd5: {}, fileName: {}, chunkIndex: {}", fileMd5, fileName, chunkIndex);
                     
                     // 流式计算分片MD5，避免高并发上传时反复分配大 byte[]
-                    chunkMd5 = DigestUtils.md5Hex(file.getInputStream());
+                    chunkMd5 = DigestUtils.md5Hex(FileTaskControl.stream(file.getInputStream()));
                     
                     // 构建存储路径
                     storagePath = "chunks/" + fileMd5 + "/" + chunkIndex;
@@ -181,7 +202,7 @@ public class UploadService {
             if (!chunkUploaded) {
                 // 计算分片的 MD5 值
                 logger.debug("计算分片MD5 => fileMd5: {}, fileName: {}, chunkIndex: {}", fileMd5, fileName, chunkIndex);
-                chunkMd5 = DigestUtils.md5Hex(file.getInputStream());
+                chunkMd5 = DigestUtils.md5Hex(FileTaskControl.stream(file.getInputStream()));
                 logger.debug("分片MD5计算完成 => fileMd5: {}, fileName: {}, chunkIndex: {}, chunkMd5: {}", 
                            fileMd5, fileName, chunkIndex, chunkMd5);
                            
@@ -197,7 +218,7 @@ public class UploadService {
                     PutObjectArgs putObjectArgs = PutObjectArgs.builder()
                             .bucket(minioBucketName)
                             .object(storagePath)
-                            .stream(file.getInputStream(), file.getSize(), -1)
+                            .stream(FileTaskControl.stream(file.getInputStream()), file.getSize(), -1)
                             .contentType(file.getContentType())
                             .build();
                     minioClient.putObject(putObjectArgs);
@@ -776,6 +797,25 @@ public class UploadService {
      * 为已经合并的原文件重新生成访问地址。重新处理时分片已经被清理，
      * 因此不能再次执行合并，只需复用 MinIO 中的合并文件。
      */
+    public void deleteUploadChunks(String fileMd5, String userId) throws Exception {
+        for (var result : minioClient.listObjects(ListObjectsArgs.builder().bucket(minioBucketName)
+                .prefix("chunks/" + fileMd5 + "/").recursive(true).build())) {
+            minioClient.removeObject(RemoveObjectArgs.builder().bucket(minioBucketName)
+                    .object(result.get().objectName()).build());
+        }
+        chunkInfoRepository.deleteAll(chunkInfoRepository.findByFileMd5OrderByChunkIndexAsc(fileMd5));
+        deleteFileMark(fileMd5, userId);
+    }
+
+    public java.io.InputStream openMergedFile(String fileName) {
+        try {
+            return minioClient.getObject(GetObjectArgs.builder()
+                    .bucket(minioBucketName).object("merged/" + fileName).build());
+        } catch (Exception e) {
+            throw new IllegalStateException("读取原始文件失败", e);
+        }
+    }
+
     public String getMergedFileUrl(String fileName) {
         String mergedPath = "merged/" + fileName;
         try {

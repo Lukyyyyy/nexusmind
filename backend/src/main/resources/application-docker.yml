@@ -75,7 +75,7 @@ file:
   parsing:
     chunk-size: 512
     min-chunk-size: 256
-    max-chunk-size: 4096
+    max-chunk-size: 1024
     buffer-size: 8192
     max-memory-threshold: 0.82
     mineru:
@@ -97,10 +97,17 @@ elasticsearch:
 
 knowledge-graph:
   enabled: ${KNOWLEDGE_GRAPH_ENABLED:true}
+  retrieval:
+    default-max-hops: ${KNOWLEDGE_GRAPH_DEFAULT_MAX_HOPS:3}
+    hard-max-hops: ${KNOWLEDGE_GRAPH_HARD_MAX_HOPS:4}
+    candidate-path-limit: ${KNOWLEDGE_GRAPH_CANDIDATE_PATH_LIMIT:200}
+    timeout-seconds: ${KNOWLEDGE_GRAPH_QUERY_TIMEOUT_SECONDS:5}
+    backfill-batches-per-call: ${KNOWLEDGE_GRAPH_BACKFILL_BATCHES_PER_CALL:2}
   neo4j:
     uri: ${NEO4J_URI:bolt://neo4j:7687}
     username: ${NEO4J_USERNAME:neo4j}
     password: ${NEO4J_PASSWORD:}
+    max-connection-pool-size: ${NEO4J_MAX_CONNECTION_POOL_SIZE:20}
 
 embedding:
   api:

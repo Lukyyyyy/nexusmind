@@ -18,11 +18,13 @@ public class KnowledgeGraphConfig {
     Driver knowledgeGraphDriver(
             @Value("${knowledge-graph.neo4j.uri:bolt://localhost:7687}") String uri,
             @Value("${knowledge-graph.neo4j.username:neo4j}") String username,
-            @Value("${knowledge-graph.neo4j.password:}") String password) {
+            @Value("${knowledge-graph.neo4j.password:}") String password,
+            @Value("${knowledge-graph.neo4j.max-connection-pool-size:20}") int maxConnectionPoolSize) {
         Config config = Config.builder()
                 .withConnectionTimeout(2, TimeUnit.SECONDS)
                 .withConnectionAcquisitionTimeout(2, TimeUnit.SECONDS)
                 .withMaxTransactionRetryTime(3, TimeUnit.SECONDS)
+                .withMaxConnectionPoolSize(Math.min(Math.max(maxConnectionPoolSize, 2), 50))
                 .build();
         return GraphDatabase.driver(uri, AuthTokens.basic(username, password), config);
     }

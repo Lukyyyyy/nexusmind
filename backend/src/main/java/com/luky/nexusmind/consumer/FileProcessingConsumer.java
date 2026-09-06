@@ -11,23 +11,21 @@ import com.luky.nexusmind.service.FileProcessingStatusService;
 import com.luky.nexusmind.service.KnowledgeGraphExtractionService;
 import com.luky.nexusmind.service.ParseService;
 import com.luky.nexusmind.service.VectorizationService;
-import io.minio.MinioClient;
-import io.minio.errors.*;
+import com.luky.nexusmind.service.UploadService;
+import com.luky.nexusmind.service.ModelConfigService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Service;
 
 import java.io.*;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.security.InvalidKeyException;
-import java.security.NoSuchAlgorithmException;
 
 @Service
 @Slf4j
 public class FileProcessingConsumer {
 
+    private final UploadService uploadService;
+    private final ModelConfigService modelConfigService;
     private final ParseService parseService;
     private final VectorizationService vectorizationService;
     private final AiTraceService aiTraceService;
@@ -37,13 +35,18 @@ public class FileProcessingConsumer {
     private final KnowledgeGraphExtractionService graphExtractionService;
     @Autowired
     private KafkaConfig kafkaConfig;
+    @Autowired
+    private com.luky.nexusmind.service.FileTaskControl taskControl;
 
 
     public FileProcessingConsumer(ParseService parseService, VectorizationService vectorizationService, AiTraceService aiTraceService,
                                   FileProcessingStatusService processingStatusService,
                                   DocumentVectorRepository documentVectorRepository,
                                   ElasticsearchService elasticsearchService,
-                                  KnowledgeGraphExtractionService graphExtractionService) {
+                                  KnowledgeGraphExtractionService graphExtractionService,
+                                  UploadService uploadService, ModelConfigService modelConfigService) {
+        this.uploadService = uploadService;
+        this.modelConfigService = modelConfigService;
         this.parseService = parseService;
         this.vectorizationService = vectorizationService;
         this.aiTraceService = aiTraceService;
@@ -55,7 +58,20 @@ public class FileProcessingConsumer {
 
     @KafkaListener(topics = "#{kafkaConfig.getFileProcessingTopic()}", groupId = "#{kafkaConfig.getFileProcessingGroupId()}")
     public void processTask(FileProcessingTask task) {
-        log.info("Received task: {}", task);
+        try (var scope = taskControl.open(task.getFileMd5(), task.getUserId(), null, task)) {
+            processActiveTask(task);
+        } catch (RuntimeException e) {
+            if (!com.luky.nexusmind.service.FileTaskControl.isCancelled(e)) throw e;
+            log.info("文件任务已取消，停止处理并确认消息，fileMd5: {}", task.getFileMd5());
+        }
+    }
+
+    private void processActiveTask(FileProcessingTask task) {
+        if (!com.luky.nexusmind.service.FileTaskControl.write(() -> processingStatusService.beginAttempt(task))) {
+            log.info("忽略旧版本或已删除的文件任务，fileMd5: {}", task.getFileMd5());
+            return;
+        }
+        log.info("开始处理文件任务，fileMd5: {}, attemptId: {}", task.getFileMd5(), task.getAttemptId());
         log.info("文件权限信息: userId={}, orgTag={}, isPublic={}", 
                 task.getUserId(), task.getOrgTag(), task.isPublic());
                 
@@ -75,9 +91,15 @@ public class FileProcessingConsumer {
             span.attribute("nexusmind.parse.chunk_size", task.getChunkSize());
         }
         try {
-            ProcessingStage checkpointStage = resolveCheckpointStage(task);
+            FileProcessingStatus checkpoint = processingStatusService
+                    .findByFileMd5AndUserId(task.getFileMd5(), task.getUserId()).orElse(null);
+            ProcessingStage checkpointStage = checkpoint == null ? null
+                    : checkpoint.getLastSuccessfulStage() != null ? checkpoint.getLastSuccessfulStage()
+                    : checkpoint.getCurrentStage();
             long existingChunkCount = documentVectorRepository.countDistinctChunksByFileMd5(task.getFileMd5());
-            boolean canReuseParsedChunks = canReuseParsedChunks(checkpointStage, existingChunkCount);
+            boolean canReuseParsedChunks = canReuseParsedChunks(checkpointStage, existingChunkCount)
+                    && checkpoint.getParsedChunkCount() != null
+                    && checkpoint.getParsedChunkCount().longValue() == existingChunkCount;
             span.attribute("nexusmind.file.retry.checkpoint_stage",
                             checkpointStage == null ? "none" : checkpointStage.name())
                     .attribute("nexusmind.file.retry.existing_chunk_count", existingChunkCount)
@@ -85,24 +107,28 @@ public class FileProcessingConsumer {
 
             if (canReuseParsedChunks) {
                 long existingEsDocumentCount = elasticsearchService.countByFileMd5(task.getFileMd5());
-                if (existingEsDocumentCount == existingChunkCount) {
-                    processingStatusService.markCompleted(task, Math.toIntExact(existingEsDocumentCount),
-                            existingEsDocumentCount);
+                if (existingEsDocumentCount == existingChunkCount && elasticsearchService.hasCompleteIndex(
+                        task.getFileMd5(), documentVectorRepository.findByFileMd5(task.getFileMd5()),
+                        modelConfigService.resolveEmbeddingConfig(task.getUserId()).modelName())) {
+                    com.luky.nexusmind.service.FileTaskControl.write(() -> processingStatusService.markCompleted(task, Math.toIntExact(existingEsDocumentCount),
+                            existingEsDocumentCount));
                     log.info("文件已完整入库，跳过重复处理，fileMd5: {}, chunks: {}",
                             task.getFileMd5(), existingChunkCount);
                     span.attribute("nexusmind.file.processing.status", "already_completed");
                     return;
                 }
-                processingStatusService.markParsed(task, Math.toIntExact(existingChunkCount));
+                com.luky.nexusmind.service.FileTaskControl.write(() -> processingStatusService.markParsed(task, Math.toIntExact(existingChunkCount)));
                 log.info("复用已完成的解析切片，fileMd5: {}, chunks: {}",
                         task.getFileMd5(), existingChunkCount);
             } else {
-                // 只有解析结果不可复用时才重新下载原文件。
+                // 在下载前记录真实执行阶段，失败时不再沿用旧的 INDEXING 标签。
+                com.luky.nexusmind.service.FileTaskControl.write(() -> processingStatusService.markRunning(task, ProcessingStage.PARSING, "正在读取原始文件"));
+                // 使用稳定对象名读取，兼容历史消息中已经过期的签名 URL。
                 AiTraceService.TraceSpan downloadSpan = aiTraceService.startFileSpan(
                         "file.storage.download", task.getUserId(), task.getFileMd5(), task.getFileName())
                         .attribute("storage.path.type", resolvePathType(task.getFilePath()));
                 try {
-                    fileStream = downloadFileFromStorage(task.getFilePath());
+                    fileStream = uploadService.openMergedFile(task.getFileName());
                 } catch (Exception e) {
                     downloadSpan.error(e);
                     throw e;
@@ -117,31 +143,32 @@ public class FileProcessingConsumer {
                     fileStream = new BufferedInputStream(fileStream);
                 }
 
-                processingStatusService.markRunning(task, ProcessingStage.PARSING, "正在解析文件");
+                com.luky.nexusmind.service.FileTaskControl.write(() -> processingStatusService.markRunning(task, ProcessingStage.PARSING, "正在解析文件"));
                 int parsedChunkCount = parseService.parseAndSave(task.getFileMd5(), fileStream,
                         task.getUserId(), task.getOrgTag(), task.isPublic(), task.getParseEngine(),
                         task.getFileName(), task.getChunkSize());
-                processingStatusService.markParsed(task, parsedChunkCount);
+                com.luky.nexusmind.service.FileTaskControl.write(() -> processingStatusService.markParsed(task, parsedChunkCount));
                 log.info("文件解析完成，fileMd5: {}", task.getFileMd5());
             }
 
             // 图谱抽取使用已生成的切片异步执行，不阻塞现有向量化和入库流程。
+            com.luky.nexusmind.service.FileTaskControl.check();
             graphExtractionService.extractAsync(task.getFileMd5(), task.getUserId());
 
             // 向量不保存中间结果。重试向量化或入库前清理可能残留的 ES 文档，
             // 然后对全部切片重新向量化，保证索引内容一致。
-            processingStatusService.markRunning(task, ProcessingStage.VECTORIZING, "正在生成向量");
-            elasticsearchService.deleteByFileMd5(task.getFileMd5());
+            com.luky.nexusmind.service.FileTaskControl.write(() -> processingStatusService.markRunning(task, ProcessingStage.VECTORIZING, "正在生成向量"));
+            com.luky.nexusmind.service.FileTaskControl.write(() -> elasticsearchService.deleteByFileMd5(task.getFileMd5()));
             int vectorizedCount = vectorizationService.vectorize(task.getFileMd5(),
                     task.getUserId(), task.getOrgTag(), task.isPublic());
             long esDocumentCount = vectorizedCount > 0 ? vectorizedCount : 0;
-            processingStatusService.markCompleted(task, vectorizedCount, esDocumentCount);
+            com.luky.nexusmind.service.FileTaskControl.write(() -> processingStatusService.markCompleted(task, vectorizedCount, esDocumentCount));
             log.info("向量化完成，fileMd5: {}", task.getFileMd5());
             span.attribute("nexusmind.file.processing.status", "success");
         } catch (Exception e) {
             span.error(e);
             span.attribute("nexusmind.file.processing.status", "failed");
-            log.error("Error processing task: {}", task, e);
+            log.error("文件处理失败，fileMd5: {}, attemptId: {}", task.getFileMd5(), task.getAttemptId(), e);
             // 抛出异常让 Kafka 的 DefaultErrorHandler 捕获并触发重试 / 死信
             throw new RuntimeException("Error processing task", e);
         } finally {
@@ -158,20 +185,12 @@ public class FileProcessingConsumer {
         }
     }
 
-    private ProcessingStage resolveCheckpointStage(FileProcessingTask task) {
-        if (task.getResumeFromStage() != null) {
-            return task.getResumeFromStage();
-        }
-        return processingStatusService.findByFileMd5AndUserId(task.getFileMd5(), task.getUserId())
-                .map(FileProcessingStatus::getCurrentStage)
-                .orElse(null);
-    }
-
     private boolean canReuseParsedChunks(ProcessingStage checkpointStage, long existingChunkCount) {
         if (existingChunkCount <= 0 || checkpointStage == null) {
             return false;
         }
-        return checkpointStage == ProcessingStage.VECTORIZING
+        return checkpointStage == ProcessingStage.CHUNKING
+                || checkpointStage == ProcessingStage.VECTORIZING
                 || checkpointStage == ProcessingStage.INDEXING
                 || checkpointStage == ProcessingStage.COMPLETED;
     }
@@ -186,53 +205,4 @@ public class FileProcessingConsumer {
         return "filesystem";
     }
 
-    /**
-     * 模拟从存储系统下载文件
-     *
-     * @param filePath 文件路径或 URL
-     * @return 文件输入流
-     */
-    private InputStream downloadFileFromStorage(String filePath) throws ServerException, InsufficientDataException, ErrorResponseException, IOException, NoSuchAlgorithmException, InvalidKeyException, InvalidResponseException, XmlParserException, InternalException {
-        log.info("Downloading file from storage: {}", filePath);
-
-        try {
-            // 如果是文件系统路径
-            File file = new File(filePath);
-            if (file.exists()) {
-                log.info("Detected file system path: {}", filePath);
-                return new FileInputStream(file);
-            }
-
-            // 如果是远程 URL
-            if (filePath.startsWith("http://") || filePath.startsWith("https://")) {
-                log.info("Detected remote URL: {}", filePath);
-                URL url = new URL(filePath);
-                HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-                connection.setRequestMethod("GET");
-                connection.setConnectTimeout(30000); // 连接超时30秒
-                connection.setReadTimeout(180000);   // 读取超时时间3分钟
-
-                // 添加必要的请求头
-                connection.setRequestProperty("User-Agent", "NexusMind-FileProcessor/1.0");
-
-                int responseCode = connection.getResponseCode();
-                if (responseCode == HttpURLConnection.HTTP_OK) {
-                    log.info("Successfully connected to URL, starting download...");
-                    return connection.getInputStream();
-                } else if (responseCode == HttpURLConnection.HTTP_FORBIDDEN) {
-                    log.error("Access forbidden - possible expired presigned URL");
-                    throw new IOException("Access forbidden - the presigned URL may have expired");
-                } else {
-                    log.error("Failed to download file, HTTP response code: {} for URL: {}", responseCode, filePath);
-                    throw new IOException(String.format("Failed to download file, HTTP response code: %d", responseCode));
-                }
-            }
-
-            // 如果既不是文件路径也不是 URL
-            throw new IllegalArgumentException("Unsupported file path format: " + filePath);
-        } catch (Exception e) {
-            log.error("Error downloading file from storage: {}", filePath, e);
-            return null; // 或者抛出异常
-        }
-    }
 }

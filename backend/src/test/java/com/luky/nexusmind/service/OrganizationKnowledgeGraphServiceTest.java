@@ -47,6 +47,9 @@ class OrganizationKnowledgeGraphServiceTest {
         assertEquals(1, response.edges().get(0).supportCount());
         assertEquals(1, response.edges().get(0).documentCount());
         assertFalse(response.edges().get(0).disputed());
+        assertEquals("ASSERTED", response.edges().get(0).relationKind());
+        assertFalse(response.edges().get(0).crossDocument());
+        assertEquals(0, response.stats().crossDocumentRelationCount());
         assertEquals(1, response.edges().get(0).evidences().size());
         assertEquals(2, response.documents().size());
         assertEquals(1, response.stats().documentCount());
@@ -81,6 +84,9 @@ class OrganizationKnowledgeGraphServiceTest {
         assertEquals(2, redis.documentCount());
         assertTrue(redis.disputed());
         assertEquals(2, redis.evidences().size());
+        assertEquals("ASSERTED", redis.relationKind());
+        assertTrue(redis.crossDocument());
+        assertEquals(1, response.stats().crossDocumentRelationCount());
         assertTrue(response.edges().stream().allMatch(OrganizationKnowledgeGraphService.GraphEdge::disputed));
     }
 

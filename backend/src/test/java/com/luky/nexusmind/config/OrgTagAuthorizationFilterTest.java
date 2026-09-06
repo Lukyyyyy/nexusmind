@@ -13,8 +13,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class OrgTagAuthorizationFilterTest {
 
-    @Test
-    void knowledgeGraphRequestsReceiveIdentityAttributes() throws Exception {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            "/api/v1/upload/generation",
+            "/api/v1/knowledge-graph/documents/0123456789abcdef0123456789abcdef",
+            "/api/v1/documents/0123456789abcdef0123456789abcdef/assets/abcdef.jpg"
+    })
+    void documentRequestsReceiveIdentityAttributes(String path) throws Exception {
         JwtUtils jwtUtils = new JwtUtils() {
             @Override
             public String extractUserIdFromToken(String token) {
@@ -36,7 +41,7 @@ class OrgTagAuthorizationFilterTest {
         ReflectionTestUtils.setField(filter, "jwtUtils", jwtUtils);
 
         MockHttpServletRequest request = new MockHttpServletRequest(
-                "GET", "/api/v1/knowledge-graph/documents/0123456789abcdef0123456789abcdef");
+                "GET", path);
         request.addHeader("Authorization", "Bearer token");
         MockHttpServletResponse response = new MockHttpServletResponse();
         AtomicBoolean continued = new AtomicBoolean();

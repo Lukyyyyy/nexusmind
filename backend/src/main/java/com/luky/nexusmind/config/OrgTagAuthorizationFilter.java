@@ -68,20 +68,24 @@ public class OrgTagAuthorizationFilter extends OncePerRequestFilter {
             // 需要用户ID但不需要资源权限检查的API路径
             // 这些API只需要用户身份验证，不需要对特定资源进行权限检查
             // 控制器方法通过@RequestAttribute("userId")获取用户ID
-            if (path.matches(".*/upload/chunk.*") || 
+            if (path.equals("/api/v1/upload/generation") ||
+                path.matches(".*/upload/chunk.*") ||
                 path.matches(".*/upload/merge.*") || 
                 path.matches(".*/upload/status.*") || 
                 path.matches(".*/upload/[a-fA-F0-9]{32}/retry.*") ||
                 path.matches(".*/documents/uploads.*") ||
                 path.matches(".*/documents/accessible.*") ||
                 path.matches(".*/documents/[a-fA-F0-9]{32}/chunks.*") ||
+                path.matches(".*/documents/[a-fA-F0-9]{32}/assets/[^/]+") ||
                 path.matches(".*/knowledge-graph/documents/.*") ||
                 path.matches(".*/knowledge-graph/organizations.*") ||
                 path.matches(".*/search/hybrid.*") ||
                 (path.matches(".*/documents/[a-fA-F0-9]{32}.*") && "DELETE".equals(request.getMethod()))) {
                 
                 String operation = "未知操作";
-                if (path.contains("/chunk")) {
+                if (path.equals("/api/v1/upload/generation")) {
+                    operation = "获取上传任务版本";
+                } else if (path.contains("/chunk")) {
                     operation = "分片上传";
                 } else if (path.contains("/merge")) {
                     operation = "合并分片";
@@ -95,6 +99,8 @@ public class OrgTagAuthorizationFilter extends OncePerRequestFilter {
                     operation = "获取可访问文档";
                 } else if (path.contains("/chunks")) {
                     operation = "查看文档切片";
+                } else if (path.contains("/assets/")) {
+                    operation = "查看文档图片";
                 } else if (path.contains("/knowledge-graph/documents/")) {
                     operation = "知识图谱操作";
                 } else if (path.contains("/knowledge-graph/organizations")) {

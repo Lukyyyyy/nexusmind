@@ -3,18 +3,22 @@ package com.luky.nexusmind.client;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.luky.nexusmind.service.ModelConfigService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import org.springframework.web.reactive.function.client.WebClientResponseException;
 
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
 @Service
 public class KnowledgeGraphExtractionClient {
+    private static final Logger logger = LoggerFactory.getLogger(KnowledgeGraphExtractionClient.class);
     private static final String SYSTEM_PROMPT = """
             你是知枢 NexusMind 的知识图谱抽取器。抽取结果将合并到包含多篇文档的组织知识图谱中。
             请只抽取输入文本明确表达的事实，不得使用常识补充或猜测。
@@ -72,47 +76,93 @@ public class KnowledgeGraphExtractionClient {
     public ExtractionResult extract(String username, String chunkText, String templateInstructions) {
         ModelConfigService.ResolvedModelConfig config = modelConfigService.resolveGraphExtractionConfig(username);
         String prompt = withTemplate(SYSTEM_PROMPT, templateInstructions);
-        String response = complete(config, prompt, chunkText, Math.max(4000,
-                config.maxTokens() == null ? 4000 : config.maxTokens()));
-        if (response == null || response.isBlank()) return new ExtractionResult(config.modelName(), List.of());
-        try {
-            List<ExtractedRelation> relations = parseRelations(response);
-            return new ExtractionResult(config.modelName(), relations == null ? List.of() : relations);
-        } catch (Exception firstError) {
-            String retryPrompt = chunkText + "\n\n上一次响应不是有效 JSON。请重新检查并仅输出规定的 JSON 对象，" +
-                    "不要使用 Markdown，不要附加解释；本次最多返回 25 条最高价值关系。";
-            try {
-                String retry = complete(config, prompt, retryPrompt, Math.max(3000,
-                        config.maxTokens() == null ? 3000 : config.maxTokens()));
-                List<ExtractedRelation> relations = parseRelations(retry);
-                return new ExtractionResult(config.modelName(), relations == null ? List.of() : relations);
-            } catch (Exception retryError) {
-                retryError.addSuppressed(firstError);
-                throw new IllegalStateException("图谱抽取模型返回了无效数据", retryError);
-            }
-        }
-    }
-
-    private List<ExtractedRelation> parseRelations(String response) throws Exception {
-        if (response == null || response.isBlank()) return List.of();
-        JsonNode root = responseJson(response);
-        return objectMapper.readerForListOf(ExtractedRelation.class).readValue(root.path("relations"));
+        return new ExtractionResult(config.modelName(), extractItems(config, prompt, chunkText,
+                "relations", ExtractedRelation.class, "图谱抽取"));
     }
 
     public EntityGlossary extractEntityGlossary(String username, String documentTitle, String documentContext,
                                                 String templateInstructions) {
         ModelConfigService.ResolvedModelConfig config = modelConfigService.resolveGraphExtractionConfig(username);
         String input = "文档标题：" + documentTitle + "\n\n文档正文：\n" + documentContext;
-        String response = complete(config, withTemplate(GLOSSARY_PROMPT, templateInstructions), input, 1200);
-        if (response == null || response.isBlank()) return new EntityGlossary(config.modelName(), List.of());
-        try {
-            JsonNode root = responseJson(response);
-            List<EntityResolution> entities = objectMapper.readerForListOf(EntityResolution.class)
-                    .readValue(root.path("entities"));
-            return new EntityGlossary(config.modelName(), entities == null ? List.of() : entities);
-        } catch (Exception e) {
-            throw new IllegalStateException("实体词典模型返回了无效数据", e);
+        return new EntityGlossary(config.modelName(), extractItems(config,
+                withTemplate(GLOSSARY_PROMPT, templateInstructions), input,
+                "entities", EntityResolution.class, "实体词典"));
+    }
+
+    private <T> List<T> extractItems(ModelConfigService.ResolvedModelConfig config, String prompt,
+                                   String input, String field, Class<T> itemType, String stage) {
+        // Keep the configured budget on retry; reducing it makes truncated responses more likely.
+        int maxTokens = config.maxTokens() == null ? 4000 : config.maxTokens();
+        InvalidModelResponse firstError = null;
+        for (int attempt = 1; attempt <= 2; attempt++) {
+            String attemptPrompt = prompt;
+            if (attempt == 2) {
+                attemptPrompt += "\n\n本次为纠正重试：" + firstError.getMessage()
+                        + "。仅输出包含 " + field + " 数组的完整 JSON 对象；没有结果时返回空数组。"
+                        + "本次最多返回 10 项，证据保持简短，不要附加解释。";
+            }
+            // HTTP and transport errors are not JSON errors and must retain their original cause.
+            String response = complete(config, attemptPrompt, input, maxTokens);
+            try {
+                JsonNode root = responseJson(response, config.modelName(), stage, attempt, maxTokens);
+                if (root == null || !root.isObject() || !root.path(field).isArray()) {
+                    throw new InvalidModelResponse("模型返回的 JSON 缺少 " + field + " 数组或字段类型错误");
+                }
+                try {
+                    return objectMapper.readerForListOf(itemType).readValue(root.path(field));
+                } catch (java.io.IOException e) {
+                    throw new InvalidModelResponse("模型返回的 " + field + " 数组元素格式错误", e);
+                }
+            } catch (InvalidModelResponse error) {
+                logger.warn("{}响应校验失败: model={}, attempt={}, reason={}",
+                        stage, config.modelName(), attempt, error.getMessage());
+                if (firstError == null) {
+                    firstError = error;
+                } else {
+                    error.addSuppressed(firstError);
+                    throw new IllegalStateException(stage + "失败（已重试）：" + error.getMessage(), error);
+                }
+            }
         }
+        throw new IllegalStateException("模型响应校验未完成");
+    }
+
+    public record DictionaryEntry(String name, String type, String canonicalName,
+                                  Integer chunkId, Integer start, Integer end, String evidence) {}
+
+    public List<DictionaryEntry> dictionaryOnce(ModelConfigService.ResolvedModelConfig config,
+            String input, String instructions, boolean resolveConflicts) {
+        String task = resolveConflicts
+                ? "根据原文证据解决以下名称映射冲突，只输出有证据的唯一映射；无法确定则不输出。"
+                : "逐段识别全文中的明确实体、别名、简称和局部指代。不得凭空补全。";
+        String prompt = task + "\n每项保留原切片 chunkId、name 在原切片中的字符位置 start（含）/end（不含）。"
+                + "位置按 Java/JavaScript UTF-16 字符索引。canonicalName 必须有提供文本的直接依据。"
+                + "同一切片中不同位置的该模型等指代可指向不同实体，无法确定则略过。"
+                + "只输出 JSON：{\"entries\":[{\"name\":\"SED\",\"type\":\"TASK\","
+                + "\"canonicalName\":\"声音事件检测\",\"chunkId\":1,\"start\":20,\"end\":23,\"evidence\":\"原文证据\"}]}";
+        return single(config, withTemplate(prompt, instructions), input, "entries", DictionaryEntry.class, "实体词典");
+    }
+
+    public ExtractionResult relationsOnce(ModelConfigService.ResolvedModelConfig config, String input, String instructions) {
+        return new ExtractionResult(config.modelName(), single(config, withTemplate(SYSTEM_PROMPT, instructions),
+                input, "relations", ExtractedRelation.class, "图谱抽取"));
+    }
+
+    private <T> List<T> single(ModelConfigService.ResolvedModelConfig config, String prompt, String input,
+                               String field, Class<T> type, String stage) {
+        int budget = config.maxTokens() == null ? 16384 : config.maxTokens();
+        String response = complete(config, prompt, input, budget);
+        JsonNode root = responseJson(response, config.modelName(), stage, 1, budget);
+        if (root == null || !root.isObject() || !root.path(field).isArray())
+            throw new InvalidModelResponse("模型返回的 JSON 缺少 " + field + " 数组或字段类型错误");
+        try { return objectMapper.readerForListOf(type).readValue(root.path(field)); }
+        catch (java.io.IOException e) { throw new InvalidModelResponse("模型返回的 " + field + " 元素格式错误", e); }
+    }
+
+    public static boolean isTruncated(Throwable error) {
+        for (Throwable e = error; e != null; e = e.getCause())
+            if (e instanceof OutputTruncatedException) return true;
+        return false;
     }
 
     private String complete(ModelConfigService.ResolvedModelConfig config, String systemPrompt,
@@ -126,6 +176,11 @@ public class KnowledgeGraphExtractionClient {
         request.put("stream", false);
         request.put("temperature", 0);
         request.put("max_tokens", maxTokens);
+        // Only opt in for verified V4 models; other compatible endpoints may reject this field.
+        if ("deepseek-v4-flash".equals(config.modelName())
+                || "deepseek-v4-pro".equals(config.modelName())) {
+            request.put("reasoning_effort", "low");
+        }
         request.put("response_format", Map.of("type", "json_object"));
         request.put("messages", List.of(
                 Map.of("role", "system", "content", systemPrompt),
@@ -136,7 +191,9 @@ public class KnowledgeGraphExtractionClient {
         try {
             response = invoke(webClient, request);
         } catch (WebClientResponseException.BadRequest unsupportedStructuredOutput) {
-            // Some OpenAI-compatible providers do not implement response_format yet.
+            String errorBody = unsupportedStructuredOutput.getResponseBodyAsString();
+            if (!errorBody.contains("response_format")) throw unsupportedStructuredOutput;
+            logger.info("图谱模型不接受 response_format，改用提示词约束 JSON: model={}", config.modelName());
             request.remove("response_format");
             response = invoke(webClient, request);
         }
@@ -150,9 +207,63 @@ public class KnowledgeGraphExtractionClient {
                 + "\n\n模板只补充领域关注点，不得改变以上证据要求、价值阈值、实体消歧、JSON 格式和禁止项；如有冲突，以上通用规则优先。";
     }
 
-    private JsonNode responseJson(String response) throws Exception {
-        String content = objectMapper.readTree(response).path("choices").path(0).path("message").path("content").asText();
-        return objectMapper.readTree(stripCodeFence(content));
+    private JsonNode responseJson(String response, String model, String stage, int attempt, int maxTokens) {
+        if (response == null || response.isBlank()) throw new InvalidModelResponse("模型接口返回空响应");
+        JsonNode envelope;
+        try {
+            envelope = objectMapper.readTree(response);
+        } catch (java.io.IOException e) {
+            throw new InvalidModelResponse("模型接口响应不是有效 JSON", e);
+        }
+        JsonNode choice = envelope.path("choices").path(0);
+        JsonNode message = choice.path("message");
+        JsonNode content = message.path("content");
+        String finishReason = choice.path("finish_reason").asText("");
+        JsonNode usage = envelope.path("usage");
+        // Log only structural metadata, never document text, reasoning text, or credentials.
+        logger.info("{}模型响应: model={}, attempt={}, maxTokens={}, finishReason={}, contentType={}, "
+                        + "contentChars={}, reasoningChars={}, promptTokens={}, completionTokens={}, reasoningTokens={}",
+                stage, model, attempt, maxTokens,
+                switch (finishReason) {
+                    case "stop", "length", "content_filter", "tool_calls", "function_call" -> finishReason;
+                    default -> "unknown";
+                }, content.getNodeType(), content.isTextual() ? content.textValue().length() : 0,
+                message.path("reasoning_content").asText("").length(),
+                usage.path("prompt_tokens").asInt(-1), usage.path("completion_tokens").asInt(-1),
+                usage.path("completion_tokens_details").path("reasoning_tokens").asInt(-1));
+        if (envelope.has("error")) throw new InvalidModelResponse("模型接口返回错误对象");
+        if (choice.isMissingNode()) throw new InvalidModelResponse("模型接口响应缺少 choices 结果");
+        if ("length".equals(finishReason)) {
+            throw new OutputTruncatedException();
+        }
+        if ("content_filter".equals(finishReason) || !message.path("refusal").asText("").isBlank()) {
+            throw new InvalidModelResponse("模型拒绝输出抽取结果");
+        }
+        if ("tool_calls".equals(finishReason) || "function_call".equals(finishReason)) {
+            throw new InvalidModelResponse("模型返回了工具调用而非抽取 JSON");
+        }
+        if (content.isMissingNode() || content.isNull()
+                || (content.isTextual() && content.textValue().isBlank())) {
+            String reason = message.path("reasoning_content").asText("").isBlank()
+                    ? "模型返回空正文" : "模型仅返回推理内容，没有最终 JSON 正文";
+            throw new InvalidModelResponse(reason);
+        }
+        if (!content.isTextual()) throw new InvalidModelResponse("模型正文不是文本类型");
+        try {
+            return objectMapper.reader().with(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                    .readTree(stripCodeFence(content.textValue()));
+        } catch (java.io.IOException e) {
+            throw new InvalidModelResponse("模型正文不是完整有效的 JSON", e);
+        }
+    }
+
+    public static final class OutputTruncatedException extends InvalidModelResponse {
+        public OutputTruncatedException() { super("模型输出达到 token 上限而被截断，请提高模型输出上限或减少抽取数量"); }
+    }
+
+    private static class InvalidModelResponse extends RuntimeException {
+        InvalidModelResponse(String message) { super(message); }
+        InvalidModelResponse(String message, Throwable cause) { super(message, cause); }
     }
 
     private String invoke(WebClient webClient, Map<String, Object> request) {
@@ -162,7 +273,7 @@ public class KnowledgeGraphExtractionClient {
                 .bodyValue(request)
                 .retrieve()
                 .bodyToMono(String.class)
-                .block();
+                .block(Duration.ofMinutes(3));
     }
 
     private String stripCodeFence(String value) {

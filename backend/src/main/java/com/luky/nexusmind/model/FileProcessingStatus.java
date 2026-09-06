@@ -18,6 +18,13 @@ public class FileProcessingStatus {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Column(name = "attempt_id", length = 36)
+    private String attemptId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "last_successful_stage", length = 32)
+    private ProcessingStage lastSuccessfulStage;
+
     @Column(name = "file_md5", length = 32, nullable = false)
     private String fileMd5;
 

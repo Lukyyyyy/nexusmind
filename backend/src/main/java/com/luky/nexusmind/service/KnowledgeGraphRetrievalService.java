@@ -21,11 +21,17 @@ public class KnowledgeGraphRetrievalService {
         List<KnowledgeGraphStoreService.GraphPath> paths = graphStoreService.search(
                 seed, scopeFileIds, 8);
         if (paths.isEmpty()) return "";
-        StringBuilder context = new StringBuilder("以下是知识图谱找到的跨文档关系路径：\n");
+        StringBuilder context = new StringBuilder(
+                "以下是知识图谱找到的关系路径。每一跳均有来源；多跳路径是组合推理，不等同于原文直接陈述：\n");
         int pathIndex = 1;
         int sourceIndex = (searchResults == null ? 0 : searchResults.size()) + 1;
         for (KnowledgeGraphStoreService.GraphPath path : paths) {
-            context.append("关系路径 ").append(pathIndex++).append(": ");
+            context.append("关系路径 ").append(pathIndex++)
+                    .append("（").append(path.hops()).append(" 跳，评分 ")
+                    .append(String.format(java.util.Locale.ROOT, "%.3f", path.score()));
+            if (path.crossDocument()) context.append("，跨文档");
+            if (path.inferred()) context.append("，组合推理");
+            context.append("）: ");
             List<java.util.Map<String, Object>> nodes = path.nodes();
             List<java.util.Map<String, Object>> relations = path.relations();
             for (int i = 0; i < relations.size() && i + 1 < nodes.size(); i++) {

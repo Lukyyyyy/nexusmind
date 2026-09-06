@@ -4,6 +4,7 @@ import {
   fetchGraphPromptTemplates,
   publishDocumentGraph,
   rebuildDocumentGraph,
+  retryDocumentGraph,
   setDocumentGraphEnabled,
   updateGraphCandidate
 } from '@/service/api';
@@ -21,6 +22,7 @@ const saving = ref(false);
 const graph = ref<Api.KnowledgeGraph.DocumentGraph | null>(null);
 const templates = ref<Api.GraphPromptTemplate.Item[]>([]);
 const selectedTemplateId = ref<number | null>(null);
+const batchChars = ref(3072);
 const activeTab = ref<'review' | 'preview'>('review');
 const pollingStatuses = new Set<Api.KnowledgeGraph.Status>(['QUEUED', 'EXTRACTING']);
 let pollingTimer: ReturnType<typeof setTimeout> | null = null;
@@ -97,6 +99,7 @@ async function load(showLoading = true) {
   if (!error) {
     const previousStatus = graph.value?.status;
     graph.value = data;
+    if (showLoading) batchChars.value = data.batchChars || 3072;
     selectedTemplateId.value = data.templateId || templates.value.find(item => item.defaultTemplate)?.id || null;
     activeTab.value = data.status === 'PENDING_REVIEW' ? 'review' : 'preview';
     if (previousStatus && previousStatus !== data.status) emit('statusChange', data.status);
@@ -129,33 +132,54 @@ async function saveCandidate(candidate: Api.KnowledgeGraph.Candidate) {
     objectType: candidate.objectType
   });
   if (error) await load();
+  return !error;
 }
 
 async function toggleAll(selected: boolean) {
-  pendingCandidates.value.forEach(item => {
-    item.selected = selected;
-  });
-  await Promise.all(pendingCandidates.value.map(saveCandidate));
+  if (saving.value) return;
+  saving.value = true;
+  try {
+    pendingCandidates.value.forEach(item => {
+      item.selected = selected;
+    });
+    for (const candidate of [...pendingCandidates.value]) {
+      if (!(await saveCandidate(candidate))) return;
+    }
+  } finally {
+    saving.value = false;
+  }
 }
 
 async function publish() {
+  if (saving.value) return;
   if (selectedCount.value === 0) {
     window.$message?.warning('请至少选择一条关系');
     return;
   }
   saving.value = true;
-  await Promise.all(pendingCandidates.value.map(saveCandidate));
-  const { error } = await publishDocumentGraph(props.fileMd5);
-  if (!error) {
-    window.$message?.success('知识图谱已发布');
-    await load();
+  try {
+    // Candidate updates lock the same document row. Avoid a burst of competing requests.
+    for (const candidate of [...pendingCandidates.value]) {
+      if (!(await saveCandidate(candidate))) return;
+    }
+    const { data, error } = await publishDocumentGraph(props.fileMd5);
+    if (!error) {
+      graph.value = data;
+      activeTab.value = 'preview';
+      emit('statusChange', data.status);
+      window.$message?.success('知识图谱已发布');
+    } else {
+      // A timeout does not imply rollback: reconcile with the server before another attempt.
+      await load(false);
+    }
+  } finally {
+    saving.value = false;
   }
-  saving.value = false;
 }
 
 async function setEnabled(enabled: boolean) {
   saving.value = true;
-  const { error } = await setDocumentGraphEnabled(props.fileMd5, enabled, selectedTemplateId.value);
+  const { error } = await setDocumentGraphEnabled(props.fileMd5, enabled, selectedTemplateId.value, batchChars.value);
   if (!error) {
     window.$message?.success(enabled ? '已开始构建知识图谱' : '知识图谱已停用');
     await load();
@@ -164,9 +188,17 @@ async function setEnabled(enabled: boolean) {
   saving.value = false;
 }
 
+async function retryIncomplete() {
+  saving.value = true;
+  try {
+    const { error } = await retryDocumentGraph(props.fileMd5);
+    if (!error) { await load(); syncPolling(); }
+  } finally { saving.value = false; }
+}
+
 async function rebuild() {
   saving.value = true;
-  const { error } = await rebuildDocumentGraph(props.fileMd5, selectedTemplateId.value);
+  const { error } = await rebuildDocumentGraph(props.fileMd5, selectedTemplateId.value, batchChars.value);
   if (!error) {
     window.$message?.success('已重新开始抽取');
     await load();
@@ -222,8 +254,10 @@ onUnmounted(stopPolling);
               :loading="saving"
               @click="rebuild"
             >
-              重新抽取
+              全部重新抽取
             </NButton>
+            <NButton v-if="graph.enabled && graph.progress?.canRetry && ['FAILED', 'PENDING_REVIEW'].includes(graph.status)"
+              :loading="saving" @click="retryIncomplete">重试未完成部分</NButton>
             <NButton v-if="graph.enabled" type="error" ghost :loading="saving" @click="setEnabled(false)">停用</NButton>
           </NSpace>
         </div>
@@ -240,6 +274,34 @@ onUnmounted(stopPolling);
           />
         </div>
 
+        <div class="mt-12px flex items-center gap-12px">
+          <span>图谱批次大小</span>
+          <NInputNumber v-model:value="batchChars" :min="graph.chunkSize || 512" :max="100000" :precision="0"
+            :disabled="!graph.enabled || pollingStatuses.has(graph.status)" :step="1024" class="w-180px">
+            <template #suffix>字符</template>
+          </NInputNumber>
+          <NText depth="3">修改后需全部重新抽取</NText>
+        </div>
+        <NAlert v-if="graph.progress" type="info" class="mt-12px">
+          <div v-for="stage in (['dictionary', 'relations'] as const)" :key="stage" class="mb-8px">
+            {{ stage === 'dictionary' ? '实体词典生成' : '关系抽取' }}：
+            已结束 {{ graph.progress[stage].ended }}/{{ graph.progress[stage].total }} 批，
+            成功 {{ graph.progress[stage].succeeded }}，失败 {{ graph.progress[stage].failed }}，
+            重试中 {{ graph.progress[stage].retrying }}
+            <NProgress type="line" :show-indicator="false" :percentage="graph.progress[stage].total ? Math.round(100 * graph.progress[stage].ended / graph.progress[stage].total) : 0" />
+          </div>
+          <div v-if="graph.progress.stage === 'RESOLVING'">正在整理实体词典</div>
+          <div v-if="graph.progress.stage === 'FINALIZING'">正在整理关系结果</div>
+          <NCollapse v-if="graph.progress.failures?.length">
+            <NCollapseItem title="未完成范围">
+              <div v-for="failure in graph.progress.failures" :key="`${failure.stage}-${failure.batch}`">
+                {{ failure.stage }}第 {{ failure.batch }} 批：{{ failure.ranges.join('、') }}；{{ failure.reason }}
+              </div>
+            </NCollapseItem>
+          </NCollapse>
+          已发现 {{ graph.candidates.length }} 条关系
+          <span v-if="pollingStatuses.has(graph.status)">（阶段性预览，完成后可审核）</span>
+        </NAlert>
         <NTabs v-if="graph.candidates.length > 0" v-model:value="activeTab" type="line" animated>
           <NTabPane v-if="graph.status === 'PENDING_REVIEW'" name="review" tab="关系审核" display-directive="show:lazy">
             <NAlert type="info" class="mb-12px">
@@ -248,8 +310,8 @@ onUnmounted(stopPolling);
             <div class="mb-12px flex items-center justify-between">
               <NText>AI 找到 {{ pendingCandidates.length }} 条关系，已选择 {{ selectedCount }} 条</NText>
               <NSpace>
-                <NButton size="small" @click="toggleAll(true)">全选</NButton>
-                <NButton size="small" @click="toggleAll(false)">取消全选</NButton>
+                <NButton size="small" :disabled="saving" @click="toggleAll(true)">全选</NButton>
+                <NButton size="small" :disabled="saving" @click="toggleAll(false)">取消全选</NButton>
               </NSpace>
             </div>
             <div class="max-h-560px overflow-auto rd-8px border border-#e5e7eb">
@@ -258,15 +320,15 @@ onUnmounted(stopPolling);
                 :key="candidate.id"
                 class="grid grid-cols-[36px_1fr_130px_1fr] gap-10px border-b border-#eef0f3 p-12px last:border-b-0"
               >
-                <NCheckbox v-model:checked="candidate.selected" @update:checked="saveCandidate(candidate)" />
+                <NCheckbox :disabled="saving" v-model:checked="candidate.selected" @update:checked="saveCandidate(candidate)" />
                 <div class="grid grid-cols-[1fr_110px] gap-8px">
-                  <NInput v-model:value="candidate.subjectName" size="small" @change="saveCandidate(candidate)" />
-                  <NInput v-model:value="candidate.subjectType" size="small" @change="saveCandidate(candidate)" />
+                  <NInput :disabled="saving" v-model:value="candidate.subjectName" size="small" @change="saveCandidate(candidate)" />
+                  <NInput :disabled="saving" v-model:value="candidate.subjectType" size="small" @change="saveCandidate(candidate)" />
                 </div>
-                <NInput v-model:value="candidate.predicate" size="small" @change="saveCandidate(candidate)" />
+                <NInput :disabled="saving" v-model:value="candidate.predicate" size="small" @change="saveCandidate(candidate)" />
                 <div class="grid grid-cols-[1fr_110px] gap-8px">
-                  <NInput v-model:value="candidate.objectName" size="small" @change="saveCandidate(candidate)" />
-                  <NInput v-model:value="candidate.objectType" size="small" @change="saveCandidate(candidate)" />
+                  <NInput :disabled="saving" v-model:value="candidate.objectName" size="small" @change="saveCandidate(candidate)" />
+                  <NInput :disabled="saving" v-model:value="candidate.objectType" size="small" @change="saveCandidate(candidate)" />
                 </div>
                 <div class="col-start-2 col-span-3 text-12px text-#737985">
                   <span v-if="candidate.subjectMentionName && candidate.subjectMentionName !== candidate.subjectName">
@@ -286,7 +348,7 @@ onUnmounted(stopPolling);
             <NAlert v-if="graph.status === 'PENDING_REVIEW'" type="info" class="mb-12px">
               预览会跟随审核勾选实时更新；点击关系可查看对应原文证据。
             </NAlert>
-            <KnowledgeGraphCanvas :nodes="previewGraph.nodes" :edges="previewGraph.edges" />
+            <KnowledgeGraphCanvas :nodes="previewGraph.nodes" :edges="previewGraph.edges" :document="{ id: fileMd5, name: fileName }" />
           </NTabPane>
         </NTabs>
 

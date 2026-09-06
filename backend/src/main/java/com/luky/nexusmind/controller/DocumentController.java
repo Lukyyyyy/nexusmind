@@ -96,6 +96,12 @@ public class DocumentController {
                     ? fileUploadRepository.findByFileMd5(fileMd5)
                     : fileUploadRepository.findByFileMd5AndUserId(fileMd5, userId);
             if (fileOpt.isEmpty()) {
+                // 已被此前请求删除时按成功处理，仍不允许操作其他用户现存的文档。
+                if (fileUploadRepository.countByFileMd5(fileMd5) == 0) {
+                    documentService.deleteDocument(fileMd5, userId);
+                    monitor.end("文档已删除");
+                    return ResponseEntity.ok(Map.of("code", 200, "message", "文档已删除"));
+                }
                 LogUtils.logUserOperation(userId, "DELETE_DOCUMENT", fileMd5, "FAILED_NOT_FOUND");
                 monitor.end("删除失败：文档不存在");
                 Map<String, Object> response = new HashMap<>();
@@ -131,7 +137,7 @@ public class DocumentController {
             monitor.end("删除失败: " + e.getMessage());
             Map<String, Object> response = new HashMap<>();
             response.put("code", HttpStatus.INTERNAL_SERVER_ERROR.value());
-            response.put("message", "删除文档失败: " + e.getMessage());
+            response.put("message", "删除未完成，请稍后重试");
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(response);
         }
     }
@@ -419,6 +425,23 @@ public class DocumentController {
     /**
      * 查看单个文本切片完整内容。
      */
+    @GetMapping("/{fileMd5}/assets/{name}")
+    public ResponseEntity<?> getParsedAsset(
+            @PathVariable String fileMd5, @PathVariable String name,
+            @RequestAttribute("userId") String userId,
+            @RequestAttribute("orgTags") String orgTags) {
+        try {
+            InputStream stream = documentService.openParsedAsset(fileMd5, name, userId, orgTags);
+            String type = name.endsWith(".jpg") ? "image/jpeg" : "image/" + name.substring(name.lastIndexOf('.') + 1);
+            return ResponseEntity.ok().contentType(MediaType.parseMediaType(type))
+                    .header(HttpHeaders.CACHE_CONTROL, "private, no-store")
+                    .header("X-Content-Type-Options", "nosniff")
+                    .body(new InputStreamResource(stream));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        }
+    }
+
     @GetMapping("/{fileMd5}/chunks/{chunkId}")
     public ResponseEntity<?> getDocumentChunkDetail(
             @PathVariable String fileMd5,

@@ -74,14 +74,29 @@ class DocumentControllerTest {
     }
 
     @Test
-    void superAdminGetsNotFoundForMissingDocument() {
+    void missingDocumentAlsoRevokesPendingUpload() {
         RecordingDeleteService service = new RecordingDeleteService();
         DocumentController controller = deleteController(null, service);
 
         ResponseEntity<?> response = controller.deleteDocument("missing", "super-admin", "SUPER_ADMIN");
 
-        assertEquals(404, response.getStatusCode().value());
-        assertEquals(List.of(), service.deleted);
+        assertEquals(200, response.getStatusCode().value());
+        assertEquals(List.of("missing", "super-admin"), service.deleted);
+    }
+
+    @Test
+    void deleteErrorDoesNotExposeDatabaseDetails() {
+        FileUpload document = file("document.txt", "default", false);
+        RecordingDeleteService service = new RecordingDeleteService() {
+            @Override
+            public void deleteDocument(String md5, String owner) {
+                throw new RuntimeException("Row was updated: FileUpload#9");
+            }
+        };
+        ResponseEntity<?> response = deleteController(document, service)
+                .deleteDocument(document.getFileMd5(), document.getUserId(), "USER");
+        assertEquals(500, response.getStatusCode().value());
+        assertEquals("删除未完成，请稍后重试", ((Map<?, ?>) response.getBody()).get("message"));
     }
 
     private static DocumentController deleteController(FileUpload document, RecordingDeleteService service) {
@@ -89,6 +104,7 @@ class DocumentControllerTest {
         ReflectionTestUtils.setField(controller, "documentService", service);
         ReflectionTestUtils.setField(controller, "fileUploadRepository",
                 proxy(FileUploadRepository.class, (proxy, method, args) -> switch (method.getName()) {
+                    case "countByFileMd5" -> document != null && document.getFileMd5().equals(args[0]) ? 1L : 0L;
                     case "findByFileMd5" -> Optional.ofNullable(document)
                             .filter(file -> file.getFileMd5().equals(args[0]));
                     case "findByFileMd5AndUserId" -> Optional.ofNullable(document)

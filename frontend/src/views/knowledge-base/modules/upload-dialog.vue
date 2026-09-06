@@ -46,6 +46,7 @@ function createDefaultModel(): Api.KnowledgeBase.Form {
     chunkSize: defaultTextChunkSize,
     graphEnabled: true,
     graphPromptTemplateId: null,
+    graphBatchChars: 3072,
     fileList: []
   };
 }
@@ -67,6 +68,10 @@ async function handleSubmit() {
   await validate();
   if (model.value.graphEnabled && model.value.graphPromptTemplateId == null) {
     window.$message?.warning('请选择图谱抽取模板');
+    return;
+  }
+  if (model.value.graphEnabled && (!Number.isInteger(model.value.graphBatchChars) || model.value.graphBatchChars < model.value.chunkSize)) {
+    window.$message?.warning('图谱批次大小不得低于切片大小');
     return;
   }
   loading.value = true;
@@ -178,6 +183,12 @@ function onUpdate(option: unknown) {
             {{ selectedTemplate.description }}
           </NText>
         </div>
+      </NFormItem>
+      <NFormItem label="图谱批次大小" path="graphBatchChars">
+        <NInputNumber v-model:value="model.graphBatchChars" :disabled="!model.graphEnabled"
+          :min="model.chunkSize" :max="100000" :precision="0" :step="1024">
+          <template #suffix>字符</template>
+        </NInputNumber>
       </NFormItem>
       <NFormItem label="切片大小" path="chunkSize">
         <NSpace vertical :size="10">

@@ -114,7 +114,8 @@ public class OrganizationKnowledgeGraphService {
                 entityTypes,
                 documents,
                 new GraphStats(graphNodes.size(), edges.size(), contributingDocuments.size(),
-                        (int) edges.stream().filter(GraphEdge::disputed).count()),
+                        (int) edges.stream().filter(GraphEdge::disputed).count(),
+                        (int) edges.stream().filter(GraphEdge::crossDocument).count()),
                 truncated,
                 graphStoreService.isEnabled()
         );
@@ -199,6 +200,7 @@ public class OrganizationKnowledgeGraphService {
                             Double confidence, Integer evidenceChunkId, String evidenceText,
                             Long fileUploadId, String fileMd5, String fileName,
                             int supportCount, int documentCount, boolean disputed,
+                            String relationKind, boolean crossDocument,
                             List<GraphEvidence> evidences) {}
 
     public record GraphEvidence(Long claimId, Long fileUploadId, String fileMd5, String fileName,
@@ -206,7 +208,8 @@ public class OrganizationKnowledgeGraphService {
 
     public record DocumentOption(Long id, String fileMd5, String fileName) {}
 
-    public record GraphStats(int entityCount, int relationCount, int documentCount, int disputedRelationCount) {}
+    public record GraphStats(int entityCount, int relationCount, int documentCount,
+                             int disputedRelationCount, int crossDocumentRelationCount) {}
 
     private record OrganizationScopeSelection(String scopeId, String tagId, String name, ScopeType scopeType,
                                               List<FileUpload> files) {
@@ -305,7 +308,7 @@ public class OrganizationKnowledgeGraphService {
             return new GraphEdge("claim-" + primary.claimId(), sourceKey, targetKey, predicate,
                     primary.confidence(), primary.chunkId(), primary.evidenceText(), primary.fileUploadId(),
                     primary.fileMd5(), primary.fileName(), evidences.size(), documents, disputed,
-                    List.copyOf(evidences));
+                    "ASSERTED", documents > 1, List.copyOf(evidences));
         }
     }
 }
